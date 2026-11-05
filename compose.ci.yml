@@ -1,0 +1,13 @@
+# Override for the end-to-end check (scripts/e2e.sh), used together with docker-compose.yml.
+# Its own project name and no published ports keep it apart from a running local stack.
+name: oncall-rag-e2e
+
+services:
+  db:
+    ports: !reset []
+
+  ollama:
+    ports: !reset []
+    volumes:
+      # Model files live in a host folder so CI can cache them between runs.
+      - ${OLLAMA_MODELS_DIR:?set OLLAMA_MODELS_DIR to a host folder for Ollama models}:/root/.ollama/models

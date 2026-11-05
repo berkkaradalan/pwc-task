@@ -1,4 +1,7 @@
 # pwc-task
+
+[![CI](https://github.com/berkkaradalan/pwc-task/actions/workflows/ci.yml/badge.svg)](https://github.com/berkkaradalan/pwc-task/actions/workflows/ci.yml)
+
 Experienced software developer transitioning to GenAI home assignment
 
 ## Running ingestion
@@ -97,6 +100,52 @@ creates the tables, because the vector column dimension comes from `EMBEDDING_DI
 model. If the stored model or dimension differs from the configuration, ingestion stops
 and asks for `--reindex`, so vectors from different models are never mixed.
 
+## Quality checks
+
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests. Every check
+runs locally with the same command, from the repository root:
+
+```bash
+# Python: lint, formatting, lockfile, types (strict, src/ only), unit tests with coverage
+uv run ruff check .
+uv run ruff format --check .
+uv lock --check
+uv run mypy src
+uv run pytest --cov=oncall_rag
+
+# Dockerfile, Compose file (needs .env), workflow files, secrets in the git history
+docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
+docker compose config -q
+docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo:ro" \
+  zricethezav/gitleaks:v8.30.1 git --redact --no-banner /repo
+
+# Image scan: fails only on CRITICAL vulnerabilities that have a fix
+docker build -t oncall-rag:ci .
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  aquasec/trivy:0.76.1 image --severity CRITICAL --ignore-unfixed --exit-code 1 oncall-rag:ci
+
+# End to end (needs .env)
+OLLAMA_MODELS_DIR=./.cache/ollama-models scripts/e2e.sh
+```
+
+`scripts/e2e.sh` starts the Compose stack with the `compose.ci.yml` override (its own
+project name, no published ports), runs `ingest` on the sample documents in `data/docs`,
+and fails unless it exits with `0` and the `chunks` table is not empty. Ollama models are
+kept in `OLLAMA_MODELS_DIR`, which CI caches by model name; the Ollama container writes
+that folder as root.
+
+`uv run pre-commit install` runs ruff, end-of-file and trailing-whitespace fixes, and
+gitleaks on staged changes before each commit. Dependabot proposes weekly updates for
+uv dependencies, GitHub Actions, the Dockerfile base images and the images in
+`docker-compose.yml`.
+
+## Next steps
+
+- Type-check `tests/` with mypy too. This needs a `py.typed` marker in the package and
+  one module name per test file (today `tests/fakes.py` resolves as both `fakes` and
+  `tests.fakes`).
+
 ## Project structure
 
 Each service is its own package and imports only from `shared`; the question-answering
@@ -124,11 +173,17 @@ oncall-rag/
 │   ├── fakes.py                # FakeEmbedder, InMemoryVectorStore
 │   ├── fixtures/docs/          # small test documents
 │   └── unit/
-├── data/docs/                  # documents to ingest
+├── data/docs/                  # sample documents to ingest
 ├── sql/init.sql                # enables the pgvector extension
+├── scripts/e2e.sh              # end-to-end check against the Compose stack
+├── .github/
+│   ├── workflows/ci.yml        # lint, test, build + image scan, end to end
+│   └── dependabot.yml
 ├── Dockerfile
 ├── docker-compose.yml
+├── compose.ci.yml              # override used by scripts/e2e.sh
 ├── pyproject.toml / uv.lock
+├── .pre-commit-config.yaml
 ├── .env.example
 └── README.md
 ```

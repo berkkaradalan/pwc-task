@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from oncall_rag.shared.errors import DocsDirectoryNotFoundError
 from oncall_rag.ingest.loaders import DocumentRejectedError, load_documents, parse_document
+from oncall_rag.shared.errors import DocsDirectoryNotFoundError
 
 
 def test_front_matter_is_parsed_into_title_and_metadata(fixture_docs: Path) -> None:
@@ -123,7 +123,9 @@ def test_front_matter_is_optional_and_unknown_fields_are_ignored() -> None:
 
 
 def test_windows_line_endings_and_bom_are_normalized() -> None:
-    document = parse_document("doc.md", "\ufeff---\r\ntitle: T\r\n---\r\nLine one\r\nLine two\r\n".encode())
+    document = parse_document(
+        "doc.md", "\ufeff---\r\ntitle: T\r\n---\r\nLine one\r\nLine two\r\n".encode()
+    )
 
     assert document.title == "T"
     assert document.content == "Line one\nLine two"

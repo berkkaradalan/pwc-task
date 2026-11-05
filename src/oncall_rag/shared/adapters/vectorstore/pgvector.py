@@ -77,7 +77,9 @@ VALUES (%s, %s, %s, %s, %s, %s)
 
 
 @asynccontextmanager
-async def connect_pgvector_store(database_url: str, *, dimension: int) -> AsyncIterator["PgVectorStore"]:
+async def connect_pgvector_store(
+    database_url: str, *, dimension: int
+) -> AsyncIterator["PgVectorStore"]:
     if dimension > MAX_HNSW_DIMENSIONS:
         raise ConfigError(
             f"EMBEDDING_DIM must be at most {MAX_HNSW_DIMENSIONS} (pgvector HNSW index limit)"
@@ -130,7 +132,9 @@ class PgVectorStore:
 
     async def list_embedding_models(self) -> set[str]:
         async with _database_errors():
-            cursor = await self._connection.execute("SELECT DISTINCT embedding_model FROM documents")
+            cursor = await self._connection.execute(
+                "SELECT DISTINCT embedding_model FROM documents"
+            )
             return {row[0] for row in await cursor.fetchall()}
 
     async def get_content_hash(self, source: str) -> str | None:
@@ -150,7 +154,9 @@ class PgVectorStore:
     ) -> None:
         async with _database_errors(), self._connection.transaction():
             document_id = await self._upsert_document(document, embedding_model)
-            await self._connection.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            await self._connection.execute(
+                "DELETE FROM chunks WHERE document_id = %s", (document_id,)
+            )
             await self._insert_chunks(document_id, chunks, embeddings)
 
     async def delete_documents(self, sources: Collection[str]) -> None:
@@ -172,7 +178,7 @@ class PgVectorStore:
         )
         row = await cursor.fetchone()
         assert row is not None  # narrows the type: RETURNING always yields a row
-        return row[0]
+        return int(row[0])
 
     async def _insert_chunks(
         self,
@@ -184,7 +190,14 @@ class PgVectorStore:
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             metadata = Jsonb(dict(chunk.metadata))
             rows.append(
-                (document_id, chunk.chunk_index, chunk.heading_path, chunk.text, metadata, Vector(list(embedding)))
+                (
+                    document_id,
+                    chunk.chunk_index,
+                    chunk.heading_path,
+                    chunk.text,
+                    metadata,
+                    Vector(list(embedding)),
+                )
             )
         async with self._connection.cursor() as cursor:
             await cursor.executemany(_INSERT_CHUNK, rows)

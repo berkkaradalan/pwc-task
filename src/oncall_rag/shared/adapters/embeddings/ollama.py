@@ -115,7 +115,9 @@ class OllamaEmbedder:
                 f"Ollama at {base_url} is unavailable after {MAX_ATTEMPTS} attempts: {cause!r}"
             ) from cause
         except httpx.HTTPError as error:
-            raise EmbedderUnavailableError(f"Ollama request to {base_url} failed: {error!r}") from error
+            raise EmbedderUnavailableError(
+                f"Ollama request to {base_url} failed: {error!r}"
+            ) from error
 
     async def _post_once(self, payload: dict[str, object]) -> httpx.Response:
         response = await self._client.post(EMBED_PATH, json=payload)
