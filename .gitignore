@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.vscode/
+.env
+CLAUDE.md
+AGENTS.md
+RULES.md
+data/docs/*
+!data/docs/.gitkeep

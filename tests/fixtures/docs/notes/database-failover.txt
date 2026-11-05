@@ -1,0 +1,3 @@
+Database failover notes.
+
+Promote the replica, then update the connection string in the secret store.
