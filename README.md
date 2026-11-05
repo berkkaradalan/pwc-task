@@ -136,15 +136,14 @@ kept in `OLLAMA_MODELS_DIR`, which CI caches by model name; the Ollama container
 that folder as root.
 
 `uv run pre-commit install` runs ruff, end-of-file and trailing-whitespace fixes, and
-gitleaks on staged changes before each commit. Dependabot proposes weekly updates for
-uv dependencies, GitHub Actions, the Dockerfile base images and the images in
-`docker-compose.yml`.
+gitleaks on staged changes before each commit.
 
 ## Next steps
 
 - Type-check `tests/` with mypy too. This needs a `py.typed` marker in the package and
   one module name per test file (today `tests/fakes.py` resolves as both `fakes` and
   `tests.fakes`).
+- Enable Dependabot (grouped updates, patch-only for Python) for long-term maintenance.
 
 ## Project structure
 
@@ -176,9 +175,7 @@ oncall-rag/
 ├── data/docs/                  # sample documents to ingest
 ├── sql/init.sql                # enables the pgvector extension
 ├── scripts/e2e.sh              # end-to-end check against the Compose stack
-├── .github/
-│   ├── workflows/ci.yml        # lint, test, build + image scan, end to end
-│   └── dependabot.yml
+├── .github/workflows/ci.yml    # lint, test, build + image scan, end to end
 ├── Dockerfile
 ├── docker-compose.yml
 ├── compose.ci.yml              # override used by scripts/e2e.sh
