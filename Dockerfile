@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12.15-slim-bookworm AS builder
+FROM python:3.15.0-slim-bookworm AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
 
-FROM python:3.12.15-slim-bookworm
+FROM python:3.15.0-slim-bookworm
 ARG APP_UID=10001
 RUN groupadd --system --gid "$APP_UID" app \
     && useradd --system --uid "$APP_UID" --gid app --no-create-home app
