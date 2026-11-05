@@ -25,13 +25,23 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    # Static type checking (strict) for src/.
+    "mypy>=2.4.1",
+    # Runs the same lint and secret checks locally before each commit.
+    "pre-commit>=4.7.0",
     "pytest>=8.3",
     # Runs the async pipeline and adapter tests.
     "pytest-asyncio>=0.24",
+    # Coverage report for the test run.
+    "pytest-cov>=7.1.0",
+    # Linter and formatter.
+    "ruff>=0.17.3",
+    # Type stubs for PyYAML, used by the strict mypy check.
+    "types-pyyaml>=6.0.12.20261103",
 ]
 
 [build-system]
-requires = ["uv_build>=0.9.30,<0.10"]
+requires = ["uv_build>=0.13.7,<0.14"]
 build-backend = "uv_build"
 
 [tool.pytest.ini_options]
@@ -43,3 +53,17 @@ markers = [
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+# Deliberately malformed test inputs; formatting them would change what the tests read.
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true

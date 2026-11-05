@@ -152,7 +152,9 @@ def _validate_front_matter(metadata: dict[str, object]) -> _FrontMatter:
     except ValidationError as error:
         field = str(error.errors()[0]["loc"][0])
         expected = _EXPECTED_FIELD_TYPES[field]
-        raise DocumentRejectedError(f"malformed front matter ('{field}' must be {expected})") from error
+        raise DocumentRejectedError(
+            f"malformed front matter ('{field}' must be {expected})"
+        ) from error
 
 
 def _yaml_problem(error: yaml.YAMLError) -> str:

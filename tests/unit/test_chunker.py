@@ -1,10 +1,12 @@
-from oncall_rag.shared.models import Chunk, Document
+from itertools import pairwise
+
 from oncall_rag.ingest.chunker import (
     ChunkingConfig,
     build_embedding_text,
     chunk_document,
     split_text,
 )
+from oncall_rag.shared.models import Chunk, Document
 
 CONFIG = ChunkingConfig(max_chars=200, overlap_chars=60)
 
@@ -93,7 +95,7 @@ def test_oversized_section_is_split_on_paragraphs_with_overlap() -> None:
     for paragraph in paragraphs:
         assert any(paragraph in c.text for c in chunks)
     # Consecutive chunks overlap: the next chunk starts with the previous one's tail.
-    for previous, current in zip(chunks, chunks[1:], strict=False):
+    for previous, current in pairwise(chunks):
         first_paragraph = current.text.split("\n\n")[0]
         assert previous.text.endswith(first_paragraph)
 
@@ -107,7 +109,7 @@ def test_long_paragraph_falls_back_to_sentence_boundaries() -> None:
     assert all(len(piece) <= CONFIG.max_chars for piece in pieces)
     assert all(piece.endswith(".") for piece in pieces)
     # Overlap uses whole sentences.
-    for previous, current in zip(pieces, pieces[1:], strict=False):
+    for previous, current in pairwise(pieces):
         assert previous.endswith(current.split(". ")[0] + ".")
 
 

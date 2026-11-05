@@ -12,7 +12,9 @@ DIMENSION = 4
 class FakeOllama:
     """httpx.MockTransport handler: scripted responses, records request payloads."""
 
-    def __init__(self, failures: list[httpx.Response | Exception] | None = None, dimension: int = DIMENSION) -> None:
+    def __init__(
+        self, failures: list[httpx.Response | Exception] | None = None, dimension: int = DIMENSION
+    ) -> None:
         self.failures = list(failures or [])
         self.dimension = dimension
         self.payloads: list[dict] = []
@@ -29,8 +31,12 @@ class FakeOllama:
         return httpx.Response(200, json={"model": payload["model"], "embeddings": vectors})
 
 
-def make_embedder(handler: FakeOllama, model: str = "qwen3-embedding:0.6b", batch_size: int = 2) -> OllamaEmbedder:
-    client = httpx.AsyncClient(base_url="http://ollama.test", transport=httpx.MockTransport(handler))
+def make_embedder(
+    handler: FakeOllama, model: str = "qwen3-embedding:0.6b", batch_size: int = 2
+) -> OllamaEmbedder:
+    client = httpx.AsyncClient(
+        base_url="http://ollama.test", transport=httpx.MockTransport(handler)
+    )
     return OllamaEmbedder(
         client, model=model, dimension=DIMENSION, batch_size=batch_size, backoff_seconds=0
     )

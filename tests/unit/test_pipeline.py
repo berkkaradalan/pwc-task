@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from oncall_rag.shared.errors import DocsDirectoryNotFoundError, EmbeddingModelMismatchError
 from oncall_rag.ingest.chunker import ChunkingConfig
 from oncall_rag.ingest.pipeline import IngestionPipeline
+from oncall_rag.shared.errors import DocsDirectoryNotFoundError, EmbeddingModelMismatchError
 from tests.fakes import FakeEmbedder, InMemoryVectorStore
 
 VALID_SOURCES = ["no-front-matter.md", "notes/database-failover.txt", "payments-outage.md"]

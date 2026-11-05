@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same uv as the Dockerfile and the uv_build range in pyproject.toml.
+  UV_VERSION: "0.13.7"
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks scans every commit, not only the last one.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+      - name: hadolint
+        run: docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
+      - name: docker compose config
+        run: |
+          cp .env.example .env
+          docker compose config -q
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12
+      - name: gitleaks
+        # Same user as the checkout, otherwise git refuses the repository and nothing is scanned.
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo:ro"
+          zricethezav/gitleaks:v8.30.1 git --redact --no-banner /repo
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest --cov=oncall_rag
+      - name: Coverage summary
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: oncall-rag:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: trivy
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          aquasec/trivy:0.76.1 image --severity CRITICAL --ignore-unfixed --exit-code 1
+          oncall-rag:ci
+
+  e2e:
+    needs: [test, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read model names
+        id: models
+        run: |
+          names=$(grep -E '^[A-Z_]+_MODEL=' .env.example | cut -d= -f2 | sort | paste -sd+ -)
+          echo "names=$names" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ollama-models
+          key: ollama-models-${{ steps.models.outputs.names }}
+      - run: cp .env.example .env
+      - name: Ingestion end to end
+        run: scripts/e2e.sh
+        env:
+          OLLAMA_MODELS_DIR: ${{ runner.temp }}/ollama-models
+      - name: Make the model cache readable
+        # Ollama writes some files as root with mode 0600; the cache is saved as the runner user.
+        run: sudo chmod -R a+rX "${{ runner.temp }}/ollama-models"
