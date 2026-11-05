@@ -4,7 +4,8 @@ import hashlib
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from oncall_rag.shared.models import Chunk, Document
+from oncall_rag.shared.errors import EmbeddingModelMismatchError, VectorStoreUnavailableError
+from oncall_rag.shared.models import Chunk, Document, Passage
 
 FAKE_DIMENSION = 8
 
@@ -45,10 +46,15 @@ class StoredDocument:
 
 
 class InMemoryVectorStore:
+    """Stores documents in a dict. `search` returns the canned `search_results`."""
+
     def __init__(self) -> None:
         self.documents: dict[str, StoredDocument] = {}
         self.initialize_calls = 0
         self.reset_calls = 0
+        self.search_results: list[Passage] = []
+        self.search_calls: list[tuple[list[float], int]] = []
+        self.is_down = False
 
     async def initialize(self) -> None:
         self.initialize_calls += 1
@@ -57,11 +63,24 @@ class InMemoryVectorStore:
         self.reset_calls += 1
         self.documents.clear()
 
+    async def ping(self) -> None:
+        if self.is_down:
+            raise VectorStoreUnavailableError("PostgreSQL is unavailable: connection refused")
+
+    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
+        self.search_calls.append((list(vector), top_k))
+        return self.search_results[:top_k]
+
     async def list_sources(self) -> set[str]:
         return set(self.documents)
 
     async def list_embedding_models(self) -> set[str]:
         return {stored.embedding_model for stored in self.documents.values()}
+
+    async def ensure_compatible(self, embedding_model: str) -> None:
+        foreign = await self.list_embedding_models() - {embedding_model}
+        if foreign:
+            raise EmbeddingModelMismatchError(foreign, embedding_model)
 
     async def get_content_hash(self, source: str) -> str | None:
         stored = self.documents.get(source)
@@ -84,3 +103,18 @@ class InMemoryVectorStore:
     async def delete_documents(self, sources: Collection[str]) -> None:
         for source in sources:
             del self.documents[source]
+
+
+class FakeLanguageModel:
+    """Returns `answer`, or raises `error` if set. Records every prompt pair."""
+
+    def __init__(self, answer: str = "Fake answer.") -> None:
+        self.answer = answer
+        self.error: Exception | None = None
+        self.calls: list[tuple[str, str]] = []
+
+    async def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append((system_prompt, user_prompt))
+        if self.error is not None:
+            raise self.error
+        return self.answer

@@ -4,7 +4,7 @@ The schema is created by the application (not by sql/init.sql) because the vecto
 column dimension comes from EMBEDDING_DIM.
 """
 
-from collections.abc import AsyncIterator, Collection, Sequence
+from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import asynccontextmanager
 
 import psycopg
@@ -12,14 +12,17 @@ from pgvector import Vector
 from pgvector.psycopg import register_vector_async
 from psycopg import sql
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 
 from oncall_rag.shared.errors import (
     ConfigError,
+    EmbeddingModelMismatchError,
     IndexSchemaMismatchError,
     VectorStoreUnavailableError,
 )
-from oncall_rag.shared.models import Chunk, Document
+from oncall_rag.shared.models import Chunk, Document, Passage
 
+# Also the longest wait for a free pooled connection.
 CONNECT_TIMEOUT_SECONDS = 10
 # pgvector's HNSW index supports at most this many dimensions for the `vector` type.
 MAX_HNSW_DIMENSIONS = 2000
@@ -75,71 +78,102 @@ INSERT INTO chunks (document_id, chunk_index, heading_path, text, metadata, embe
 VALUES (%s, %s, %s, %s, %s, %s)
 """
 
+# `<=>` is cosine distance; ordering by it lets the HNSW index serve the query.
+_SEARCH = """
+SELECT d.source, d.title, c.heading_path, c.text, 1 - (c.embedding <=> %(vector)s) AS score
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+ORDER BY c.embedding <=> %(vector)s
+LIMIT %(top_k)s
+"""
+
+Connection = psycopg.AsyncConnection
+
 
 @asynccontextmanager
 async def connect_pgvector_store(
-    database_url: str, *, dimension: int
-) -> AsyncIterator["PgVectorStore"]:
+    database_url: str, *, dimension: int, pool_max_size: int
+) -> AsyncGenerator["PgVectorStore"]:
     if dimension > MAX_HNSW_DIMENSIONS:
         raise ConfigError(
             f"EMBEDDING_DIM must be at most {MAX_HNSW_DIMENSIONS} (pgvector HNSW index limit)"
         )
-    try:
-        connection = await psycopg.AsyncConnection.connect(
-            database_url, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS
-        )
-    except psycopg.OperationalError as error:
-        raise VectorStoreUnavailableError(f"Cannot connect to PostgreSQL: {error}") from error
-    async with connection:
-        yield PgVectorStore(connection, dimension=dimension)
+    pool = AsyncConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=pool_max_size,
+        kwargs={"autocommit": True, "connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        configure=_configure_connection,
+        # Replaces connections broken by a database restart before they are handed out.
+        check=AsyncConnectionPool.check_connection,
+        timeout=CONNECT_TIMEOUT_SECONDS,
+        open=False,
+    )
+    async with _database_errors():
+        await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
+    async with pool:
+        yield PgVectorStore(pool, dimension=dimension)
+
+
+async def _configure_connection(connection: Connection) -> None:
+    await connection.execute(_CREATE_EXTENSION)
+    await register_vector_async(connection)
 
 
 @asynccontextmanager
-async def _database_errors() -> AsyncIterator[None]:
+async def _database_errors() -> AsyncGenerator[None]:
     try:
         yield
     except psycopg.OperationalError as error:
-        raise VectorStoreUnavailableError(f"PostgreSQL error: {error}") from error
+        raise VectorStoreUnavailableError(f"PostgreSQL is unavailable: {error}") from error
 
 
 class PgVectorStore:
-    def __init__(self, connection: psycopg.AsyncConnection, *, dimension: int) -> None:
-        self._connection = connection
+    def __init__(self, pool: AsyncConnectionPool[Connection], *, dimension: int) -> None:
+        self._pool = pool
         self._dimension = dimension
 
     async def initialize(self) -> None:
-        async with _database_errors():
-            await self._connection.execute(_CREATE_EXTENSION)
-            await register_vector_async(self._connection)
-            stored = await self._stored_dimension()
+        async with self._connection() as connection:
+            stored = await self._stored_dimension(connection)
             if stored is not None and stored != self._dimension:
                 raise IndexSchemaMismatchError(stored, self._dimension)
-            async with self._connection.transaction():
-                await self._create_schema()
+            async with connection.transaction():
+                await self._create_schema(connection)
 
     async def reset(self) -> None:
-        async with _database_errors():
-            async with self._connection.transaction():
-                await self._connection.execute(_CREATE_EXTENSION)
-                await self._connection.execute(_DROP_SCHEMA)
-                await self._create_schema()
-            await register_vector_async(self._connection)
+        async with self._connection() as connection, connection.transaction():
+            await connection.execute(_DROP_SCHEMA)
+            await self._create_schema(connection)
+
+    async def ping(self) -> None:
+        async with self._connection() as connection:
+            await connection.execute("SELECT 1")
+
+    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
+        async with self._connection() as connection:
+            cursor = await connection.execute(
+                _SEARCH, {"vector": Vector(list(vector)), "top_k": top_k}
+            )
+            rows = await cursor.fetchall()
+        return [
+            Passage(source=source, title=title, heading_path=heading, text=text, score=score)
+            for source, title, heading, text, score in rows
+        ]
 
     async def list_sources(self) -> set[str]:
-        async with _database_errors():
-            cursor = await self._connection.execute("SELECT source FROM documents")
+        async with self._connection() as connection:
+            cursor = await connection.execute("SELECT source FROM documents")
             return {row[0] for row in await cursor.fetchall()}
 
-    async def list_embedding_models(self) -> set[str]:
-        async with _database_errors():
-            cursor = await self._connection.execute(
-                "SELECT DISTINCT embedding_model FROM documents"
-            )
-            return {row[0] for row in await cursor.fetchall()}
+    async def ensure_compatible(self, embedding_model: str) -> None:
+        foreign = await self._stored_embedding_models() - {embedding_model}
+        if foreign:
+            raise EmbeddingModelMismatchError(foreign, embedding_model)
 
     async def get_content_hash(self, source: str) -> str | None:
-        async with _database_errors():
-            cursor = await self._connection.execute(
+        async with self._connection() as connection:
+            cursor = await connection.execute(
                 "SELECT content_hash FROM documents WHERE source = %s", (source,)
             )
             row = await cursor.fetchone()
@@ -152,21 +186,26 @@ class PgVectorStore:
         embeddings: Sequence[Sequence[float]],
         embedding_model: str,
     ) -> None:
-        async with _database_errors(), self._connection.transaction():
-            document_id = await self._upsert_document(document, embedding_model)
-            await self._connection.execute(
-                "DELETE FROM chunks WHERE document_id = %s", (document_id,)
-            )
-            await self._insert_chunks(document_id, chunks, embeddings)
+        async with self._connection() as connection, connection.transaction():
+            document_id = await self._upsert_document(connection, document, embedding_model)
+            await connection.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            await self._insert_chunks(connection, document_id, chunks, embeddings)
 
     async def delete_documents(self, sources: Collection[str]) -> None:
-        async with _database_errors():
-            await self._connection.execute(
+        async with self._connection() as connection:
+            await connection.execute(
                 "DELETE FROM documents WHERE source = ANY(%s)", (list(sources),)
             )
 
-    async def _upsert_document(self, document: Document, embedding_model: str) -> int:
-        cursor = await self._connection.execute(
+    @asynccontextmanager
+    async def _connection(self) -> AsyncGenerator[Connection]:
+        async with _database_errors(), self._pool.connection() as connection:
+            yield connection
+
+    async def _upsert_document(
+        self, connection: Connection, document: Document, embedding_model: str
+    ) -> int:
+        cursor = await connection.execute(
             _UPSERT_DOCUMENT,
             {
                 "source": document.source,
@@ -182,6 +221,7 @@ class PgVectorStore:
 
     async def _insert_chunks(
         self,
+        connection: Connection,
         document_id: int,
         chunks: Sequence[Chunk],
         embeddings: Sequence[Sequence[float]],
@@ -199,14 +239,19 @@ class PgVectorStore:
                     Vector(list(embedding)),
                 )
             )
-        async with self._connection.cursor() as cursor:
+        async with connection.cursor() as cursor:
             await cursor.executemany(_INSERT_CHUNK, rows)
 
-    async def _stored_dimension(self) -> int | None:
-        cursor = await self._connection.execute(_STORED_DIMENSION)
+    async def _stored_embedding_models(self) -> set[str]:
+        async with self._connection() as connection:
+            cursor = await connection.execute("SELECT DISTINCT embedding_model FROM documents")
+            return {row[0] for row in await cursor.fetchall()}
+
+    async def _stored_dimension(self, connection: Connection) -> int | None:
+        cursor = await connection.execute(_STORED_DIMENSION)
         row = await cursor.fetchone()
         return int(row[0]) if row else None
 
-    async def _create_schema(self) -> None:
+    async def _create_schema(self, connection: Connection) -> None:
         statement = sql.SQL(_CREATE_SCHEMA).format(dimension=sql.Literal(self._dimension))
-        await self._connection.execute(statement)
+        await connection.execute(statement)

@@ -25,6 +25,18 @@ class VectorStoreUnavailableError(OncallRagError):
     pass
 
 
+class LLMUnavailableError(OncallRagError):
+    """The language model service could not be reached, is overloaded or failed."""
+
+
+class LLMTimeoutError(OncallRagError):
+    """The language model did not answer within LLM_TIMEOUT_SECONDS."""
+
+
+class LLMError(OncallRagError):
+    """The language model service answered, but rejected the request or gave no answer."""
+
+
 class ReindexRequiredError(OncallRagError):
     """The stored index is incompatible with the current configuration."""
 

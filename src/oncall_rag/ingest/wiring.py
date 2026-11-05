@@ -1,21 +1,26 @@
 """Composition root: the only place where concrete adapters are built from settings."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from oncall_rag.ingest.chunker import ChunkingConfig
 from oncall_rag.ingest.pipeline import IngestionPipeline
 from oncall_rag.shared.adapters.embeddings.ollama import OllamaEmbedder, build_http_client
 from oncall_rag.shared.adapters.vectorstore.pgvector import connect_pgvector_store
-from oncall_rag.shared.config import Settings
+from oncall_rag.shared.config import IngestSettings
+
+# Ingestion runs one statement at a time.
+INGEST_CONNECTIONS = 1
 
 
 @asynccontextmanager
-async def ingestion_pipeline(settings: Settings) -> AsyncIterator[IngestionPipeline]:
+async def ingestion_pipeline(settings: IngestSettings) -> AsyncGenerator[IngestionPipeline]:
     async with (
         build_http_client(settings.embedding_base_url) as http_client,
         connect_pgvector_store(
-            settings.database_url.get_secret_value(), dimension=settings.embedding_dim
+            settings.database_url.get_secret_value(),
+            dimension=settings.embedding_dim,
+            pool_max_size=INGEST_CONNECTIONS,
         ) as store,
     ):
         embedder = OllamaEmbedder(

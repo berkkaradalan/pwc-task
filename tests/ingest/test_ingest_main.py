@@ -5,7 +5,7 @@ from pydantic import SecretStr
 
 from oncall_rag.ingest import __main__ as ingest_main
 from oncall_rag.ingest.__main__ import ExitCode
-from oncall_rag.shared.config import Settings
+from oncall_rag.shared.config import IngestSettings
 from oncall_rag.shared.errors import (
     ConfigError,
     EmbedderUnavailableError,
@@ -14,8 +14,8 @@ from oncall_rag.shared.errors import (
 )
 
 
-def valid_settings() -> Settings:
-    return Settings(
+def valid_settings(settings_class: type[IngestSettings]) -> IngestSettings:
+    return settings_class(
         database_url=SecretStr("postgresql://user:password@db/test"),
         embedding_base_url="http://ollama.test",
         _env_file=None,  # type: ignore[call-arg]  # pydantic-settings init option, unknown to type checkers
@@ -27,9 +27,9 @@ class FakeRunIngestion:
 
     def __init__(self) -> None:
         self.error: Exception | None = None
-        self.calls: list[tuple[Settings, bool]] = []
+        self.calls: list[tuple[IngestSettings, bool]] = []
 
-    async def __call__(self, settings: Settings, *, reindex: bool) -> None:
+    async def __call__(self, settings: IngestSettings, *, reindex: bool) -> None:
         self.calls.append((settings, reindex))
         if self.error is not None:
             raise self.error
@@ -60,7 +60,7 @@ def test_config_error_exits_with_2_without_running_ingestion(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    def broken_settings() -> Settings:
+    def broken_settings(settings_class: type[IngestSettings]) -> IngestSettings:
         raise ConfigError("Invalid configuration: DATABASE_URL: Field required")
 
     monkeypatch.setattr(ingest_main, "load_settings", broken_settings)

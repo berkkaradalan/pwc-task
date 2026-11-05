@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from oncall_rag.shared.config import load_settings
+from oncall_rag.shared.config import IngestSettings, load_settings
 from oncall_rag.shared.errors import ConfigError
 
 SECRET_URL = "postgresql://user:top-secret-password@db/test"
@@ -32,7 +32,7 @@ def test_invalid_settings_raise_config_error_without_input_values(
         monkeypatch.setenv(name, value)
 
     with pytest.raises(ConfigError) as error:
-        load_settings()
+        load_settings(IngestSettings)
 
     message = str(error.value)
     assert message.startswith("Invalid configuration: ")
@@ -45,7 +45,7 @@ def test_invalid_settings_raise_config_error_without_input_values(
 def test_valid_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EMBEDDING_DIM", "768")
 
-    settings = load_settings()
+    settings = load_settings(IngestSettings)
 
     assert settings.embedding_dim == 768
     assert settings.database_url.get_secret_value() == SECRET_URL

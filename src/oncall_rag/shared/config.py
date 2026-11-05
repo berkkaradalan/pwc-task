@@ -9,7 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from oncall_rag.shared.errors import ConfigError
 
 
-class Settings(BaseSettings):
+class CommonSettings(BaseSettings):
+    """Settings every service needs: the index database and the embedding model."""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: SecretStr
@@ -17,6 +19,9 @@ class Settings(BaseSettings):
 
     embedding_model: str = "qwen3-embedding:0.6b"
     embedding_dim: int = Field(default=1024, ge=1)
+
+
+class IngestSettings(CommonSettings):
     embedding_batch_size: int = Field(default=32, ge=1)
 
     chunk_max_chars: int = Field(default=1500, ge=100)
@@ -31,9 +36,22 @@ class Settings(BaseSettings):
         return self
 
 
-def load_settings() -> Settings:
+class QuerySettings(CommonSettings):
+    llm_base_url: str
+    llm_model: str
+    llm_api_key: SecretStr
+    llm_timeout_seconds: float = Field(default=60, gt=0)
+    llm_max_concurrency: int = Field(default=4, ge=1)
+
+    retrieval_top_k: int = Field(default=4, ge=1)
+    retrieval_min_similarity: float = Field(default=0.5, ge=-1, le=1)
+
+    db_pool_max_size: int = Field(default=10, ge=1)
+
+
+def load_settings[SettingsT: CommonSettings](settings_class: type[SettingsT]) -> SettingsT:
     try:
-        return Settings()  # type: ignore[call-arg]  # values come from the environment
+        return settings_class()  # type: ignore[call-arg]  # values come from the environment
     except ValidationError as error:
         # `from None`: the original error embeds input values such as DATABASE_URL
         # credentials, so it must not surface in tracebacks either.

@@ -11,3 +11,6 @@ services:
     volumes:
       # Model files live in a host folder so CI can cache them between runs.
       - ${OLLAMA_MODELS_DIR:?set OLLAMA_MODELS_DIR to a host folder for Ollama models}:/root/.ollama/models
+
+  api:
+    ports: !reset []

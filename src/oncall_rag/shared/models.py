@@ -33,3 +33,14 @@ class Chunk:
     heading_path: str
     text: str
     metadata: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class Passage:
+    """A retrieved chunk. `score` is its cosine similarity to the question (1 = same direction)."""
+
+    source: str
+    title: str
+    heading_path: str
+    text: str
+    score: float

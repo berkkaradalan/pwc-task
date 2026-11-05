@@ -6,7 +6,6 @@ from pathlib import Path
 
 from oncall_rag.ingest.chunker import ChunkingConfig, build_embedding_text, chunk_document
 from oncall_rag.ingest.loaders import SkippedFile, load_documents
-from oncall_rag.shared.errors import EmbeddingModelMismatchError
 from oncall_rag.shared.models import Document
 from oncall_rag.shared.ports import Embedder, VectorStore
 
@@ -57,7 +56,7 @@ class IngestionPipeline:
             await self._store.reset()
         else:
             await self._store.initialize()
-        await self._check_embedding_model()
+        await self._store.ensure_compatible(self._embedder.model_name)
 
     async def _index_changed(self, documents: list[Document], report: IngestionReport) -> None:
         for document in documents:
@@ -75,12 +74,6 @@ class IngestionPipeline:
         if stale:
             await self._store.delete_documents(stale)
         return stale
-
-    async def _check_embedding_model(self) -> None:
-        stored = await self._store.list_embedding_models()
-        foreign = stored - {self._embedder.model_name}
-        if foreign:
-            raise EmbeddingModelMismatchError(foreign, self._embedder.model_name)
 
     async def _index(self, document: Document) -> None:
         chunks = chunk_document(document, self._chunking)

@@ -3,7 +3,7 @@
 from collections.abc import Collection, Sequence
 from typing import Protocol
 
-from oncall_rag.shared.models import Chunk, Document
+from oncall_rag.shared.models import Chunk, Document, Passage
 
 
 class Embedder(Protocol):
@@ -30,9 +30,19 @@ class VectorStore(Protocol):
         """Drop all indexed data and recreate the schema from the current configuration."""
         ...
 
+    async def ping(self) -> None:
+        """Run a trivial query. Raises VectorStoreUnavailableError if the database is down."""
+        ...
+
+    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
+        """The `top_k` chunks closest to `vector`, most similar first."""
+        ...
+
     async def list_sources(self) -> set[str]: ...
 
-    async def list_embedding_models(self) -> set[str]: ...
+    async def ensure_compatible(self, embedding_model: str) -> None:
+        """Raise EmbeddingModelMismatchError if the index holds vectors of another model."""
+        ...
 
     async def get_content_hash(self, source: str) -> str | None:
         """Stored content hash for `source`, or None if it is not indexed."""
@@ -50,4 +60,10 @@ class VectorStore(Protocol):
 
     async def delete_documents(self, sources: Collection[str]) -> None:
         """Delete documents together with their chunks."""
+        ...
+
+
+class LanguageModel(Protocol):
+    async def complete(self, system_prompt: str, user_prompt: str) -> str:
+        """The model's answer to one system + user message pair."""
         ...

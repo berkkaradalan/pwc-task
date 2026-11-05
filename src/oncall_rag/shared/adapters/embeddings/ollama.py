@@ -23,6 +23,8 @@ EMBED_PATH = "/api/embed"
 DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=5.0)
 MAX_ATTEMPTS = 3
 DEFAULT_BACKOFF_SECONDS = 0.5
+# Texts per request in embed_documents; queries are always embedded one at a time.
+DEFAULT_BATCH_SIZE = 32
 MAX_ERROR_DETAIL_CHARS = 300
 
 # Qwen3-Embedding is instruction-aware: queries get an instruction prefix, documents do not.
@@ -59,7 +61,7 @@ class OllamaEmbedder:
         *,
         model: str,
         dimension: int,
-        batch_size: int,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
     ) -> None:
         self._client = client
