@@ -16,15 +16,22 @@ def store() -> InMemoryVectorStore:
 
 
 @pytest.fixture
-def llm() -> FakeLanguageModel:
-    return FakeLanguageModel(answer="Scale out the workers.")
+def embedder() -> FakeEmbedder:
+    return FakeEmbedder()
 
 
 @pytest.fixture
-def client(store: InMemoryVectorStore, llm: FakeLanguageModel) -> TestClient:
+def llm() -> FakeLanguageModel:
+    return FakeLanguageModel("Scale out the workers.")
+
+
+@pytest.fixture
+def client(
+    embedder: FakeEmbedder, store: InMemoryVectorStore, llm: FakeLanguageModel
+) -> TestClient:
     """The API wired to fakes. Not used as a context manager, so the real lifespan never runs."""
     app = create_app()
-    graph = build_graph(FakeEmbedder(), store, llm, RETRIEVAL)
+    graph = build_graph(embedder, store, llm, RETRIEVAL)
     answer_service = AnswerService(graph)
     app.dependency_overrides[get_answer_service] = lambda: answer_service
     app.dependency_overrides[get_passage_search] = lambda: store

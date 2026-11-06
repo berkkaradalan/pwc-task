@@ -7,18 +7,19 @@ from dataclasses import dataclass
 import psycopg
 
 from oncall_rag.shared.errors import ReindexRequiredError
-from oncall_rag.shared.models import Chunk, Document, Passage
+from oncall_rag.shared.models import ChatMessage, Chunk, Document, Passage
 from oncall_rag.shared.ports import DocumentIndex, Embedder, LanguageModel, PassageSearch
 
 FAKE_DIMENSION = 8
 
 
 class FakeEmbedder(Embedder):
-    """Deterministic vectors derived from a hash of the text. Records document calls."""
+    """Deterministic vectors derived from a hash of the text. Records document and query calls."""
 
     def __init__(self, model_name: str = "fake-embedding-model") -> None:
         self._model_name = model_name
         self.document_calls: list[list[str]] = []
+        self.queries: list[str] = []
 
     @property
     def model_name(self) -> str:
@@ -33,6 +34,7 @@ class FakeEmbedder(Embedder):
         return [self._vector(text) for text in texts]
 
     async def embed_query(self, text: str) -> list[float]:
+        self.queries.append(text)
         return self._vector(text)
 
     def _vector(self, text: str) -> list[float]:
@@ -109,16 +111,25 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
             del self.documents[source]
 
 
+@dataclass(frozen=True, slots=True)
+class CompletionCall:
+    system_prompt: str
+    user_prompt: str
+    history: list[ChatMessage]
+
+
 class FakeLanguageModel(LanguageModel):
-    """Returns `answer`, or raises `error` if set. Records every prompt pair."""
+    """Returns `answers` in order, one per call, or raises `error` if set. Records every call."""
 
-    def __init__(self, answer: str = "Fake answer.") -> None:
-        self.answer = answer
+    def __init__(self, *answers: str) -> None:
+        self.answers = list(answers)
         self.error: Exception | None = None
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[CompletionCall] = []
 
-    async def complete(self, system_prompt: str, user_prompt: str) -> str:
-        self.calls.append((system_prompt, user_prompt))
+    async def complete(
+        self, system_prompt: str, user_prompt: str, history: Sequence[ChatMessage] = ()
+    ) -> str:
+        self.calls.append(CompletionCall(system_prompt, user_prompt, list(history)))
         if self.error is not None:
             raise self.error
-        return self.answer
+        return self.answers.pop(0)

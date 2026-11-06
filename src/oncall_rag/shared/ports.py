@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Collection, Sequence
 
-from oncall_rag.shared.models import Chunk, Document, Passage
+from oncall_rag.shared.models import ChatMessage, Chunk, Document, Passage
 
 
 class Embedder(ABC):
@@ -81,5 +81,7 @@ class LanguageModel(ABC):
     """Implemented by OpenAICompatibleLLM; FakeLanguageModel in tests."""
 
     @abstractmethod
-    async def complete(self, system_prompt: str, user_prompt: str) -> str:
-        """The model's answer to one system + user message pair."""
+    async def complete(
+        self, system_prompt: str, user_prompt: str, history: Sequence[ChatMessage] = ()
+    ) -> str:
+        """The model's answer to the user prompt, given the earlier turns in `history`."""

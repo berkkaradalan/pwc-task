@@ -128,8 +128,9 @@ address (`http://localhost:${OLLAMA_HOST_PORT}/v1` in local mode), and run
 ### API
 
 `POST /ask` takes `{"question": "..."}` (surrounding whitespace is stripped; 1 to 1000
-characters) and returns the answer, a status (`answered` or `no_relevant_context`), and
-the passages it was based on. Sources come from retrieval, never from the model output.
+characters) and an optional `history` of earlier turns, and returns the answer, a status
+(`answered` or `no_relevant_context`), the `search_query` used for retrieval, and the
+passages it was based on. Sources come from retrieval, never from the model output.
 
 A question the documentation covers:
 
@@ -142,6 +143,7 @@ curl -s localhost:8000/ask -H 'Content-Type: application/json' \
 {
   "answer": "1. Scale up worker pods if the workers are healthy but processing is lagging: ...",
   "status": "answered",
+  "search_query": "How do I mitigate a payments worker queue backlog?",
   "sources": [
     {
       "source": "payments-worker-queue-backlog.md",
@@ -162,7 +164,38 @@ curl -s localhost:8000/ask -H 'Content-Type: application/json' \
 ```
 
 ```json
-{"answer": "No relevant documentation was found for this question.", "status": "no_relevant_context", "sources": []}
+{"answer": "No relevant documentation was found for this question.", "status": "no_relevant_context", "search_query": "What is the capital of France?", "sources": []}
+```
+
+A follow-up question sends the earlier turns as `history`, oldest first. Each message has
+a `role` (`user` or `assistant`) and a `content` of 1 to 4000 characters; at most 10
+messages. `search_query` shows the standalone question that was searched for:
+
+```bash
+curl -s localhost:8000/ask -H 'Content-Type: application/json' -d '{
+  "question": "Why not?",
+  "history": [
+    {"role": "user", "content": "Should I run FLUSHALL to fix Redis memory pressure?"},
+    {"role": "assistant", "content": "No. Running `FLUSHALL` is not recommended to fix Redis memory pressure. ..."}
+  ]
+}'
+```
+
+```json
+{
+  "answer": "Running `FLUSHALL` is not recommended because it deletes every session and every idempotency key. ...",
+  "status": "answered",
+  "search_query": "Why not run FLUSHALL to fix Redis memory pressure?",
+  "sources": [
+    {
+      "source": "redis-memory-pressure.md",
+      "title": "Redis Memory Pressure",
+      "heading_path": "Mitigation",
+      "score": 0.786,
+      "excerpt": "Do not run `FLUSHALL` as a reflex. It deletes every session and every idempotency key, ..."
+    }
+  ]
+}
 ```
 
 Invalid input returns FastAPI's default `422` body, which lists each invalid field:
@@ -249,18 +282,37 @@ to multi-part questions (see [Known limitations](#known-limitations)).
 
 ## Question answering design
 
-**Flow.** A LangGraph graph, compiled once at startup: `retrieve -> generate | no_context
--> END` (`query/rag/graph.py`). All per-request data lives in the state of that
-invocation. `retrieve` embeds the question (with the query instruction of the embedding
-model) and asks pgvector for the `RETRIEVAL_TOP_K` closest chunks; passages with a cosine
-similarity below `RETRIEVAL_MIN_SIMILARITY` are dropped. With no passage left, `no_context`
-returns a fixed answer and the language model is not called. Otherwise `generate` sends
-the numbered passages and the question with a system prompt (`query/rag/prompts.py`,
-temperature 0.1, the same for both modes). It asks for plain prose (a numbered list only
+**Flow.** A LangGraph graph, compiled once at startup: `[condense_question ->] retrieve ->
+generate | no_context -> END` (`query/rag/graph.py`). All per-request data lives in the
+state of that invocation. A conditional edge from the start goes straight to `retrieve`
+when there is no history, and to `condense_question` otherwise (see Conversation history).
+`retrieve` embeds the search query (the question itself when there is no history) with
+the query instruction of the embedding model, and asks pgvector for the `RETRIEVAL_TOP_K`
+closest chunks; passages with a cosine similarity below `RETRIEVAL_MIN_SIMILARITY` are
+dropped. With no passage left, `no_context` returns a fixed answer and the language model
+is not called. Otherwise `generate` sends the numbered passages and the question with a
+system prompt (`query/rag/prompts.py`, temperature 0.1, the same for both modes). It asks for plain prose (a numbered list only
 for procedures), every fact from the passages that answers the question, commands
 generalized with a placeholder such as `<service>` when they come from another service's
 runbook, no mention of the passages themselves, and a clear "not covered" instead of a
 guess.
+
+**Conversation history.** The API stays stateless: the client sends the earlier turns with
+each request and the server stores nothing. A follow-up such as "Why not?" cannot be
+searched as is, so `condense_question` first asks the language model to rewrite it as a
+standalone question from the history (a short prompt in `query/rag/prompts.py`); `retrieve`
+embeds that rewrite, never the raw follow-up, and the response returns it as
+`search_query`. `generate` then sends the history as earlier chat messages, followed by the
+passages and the original question. Without history no extra call is made. Clients can
+only send `user` and `assistant` messages: a `system` role is rejected with `422`, so a
+client cannot add instructions that compete with the system prompt. A request carries at
+most 10 messages of up to 4000 characters each. Before each language model call only the
+most recent messages whose combined length is at most 4000 characters are kept, and older
+ones are dropped. The local model has a 4096-token context (`OLLAMA_CONTEXT_LENGTH`) that
+must also hold the system prompt, the passages and the answer. Ollama silently truncates
+the start of an oversized prompt, which would drop the system prompt; the limit prevents
+that. Condensation uses the same adapter and concurrency limit as `generate`, so its
+failures map to the same HTTP statuses.
 
 **Similarity threshold.** `RETRIEVAL_MIN_SIMILARITY` defaults to 0.5, calibrated on the
 sample documents. The top similarity of five answerable questions was 0.64 to 0.81, and
@@ -285,8 +337,8 @@ timeout is reported after up to twice `LLM_TIMEOUT_SECONDS`.
 
 **Implemented.** The graph is compiled once at startup; it holds only the adapters and the
 retrieval settings. Each `POST /ask` calls `AnswerService.answer()`, which runs
-`graph.ainvoke({"question": ...})` and so creates a new state for that invocation; the
-question, passages and answer never leave it. The application keeps no module-level mutable
+`graph.ainvoke()` with the question and the history from the request and so creates a new
+state for that invocation; the question, history, passages and answer never leave it. The application keeps no module-level mutable
 state: `app.state` holds only the objects built at startup (answer service, passage search),
 and module-level names are constants. Database access goes
 through a `psycopg-pool` connection pool (`DB_POOL_MAX_SIZE`, default 10). Every store call
@@ -338,8 +390,8 @@ More throughput needs more model capacity (see Bottlenecks), not more API proces
 
 ### Multiple instances
 
-**Implemented.** The API is stateless: no sessions, no conversation history, no local
-files. The index lives in PostgreSQL, so several API containers behind a load balancer
+**Implemented.** The API is stateless: no sessions, no local files, and conversation
+history is sent by the client with each request and never stored. The index lives in PostgreSQL, so several API containers behind a load balancer
 would answer from the same data. Each instance has its own pool and semaphore, so the
 totals are per-instance values times the number of instances (for example, 3 instances x
 `DB_POOL_MAX_SIZE` 10 = 30 of PostgreSQL's default 100 connections). Ingestion runs once as
@@ -394,9 +446,13 @@ retrieval (one embedding call and one indexed query) takes well under a second.
 - Retrieval is semantic only. A question that describes a symptom in other words than the
   runbook ("merchants keep getting logged out" for Redis evictions) may not retrieve that
   runbook; the answer then says the documentation does not cover it rather than guessing.
-- There is no conversation history and no authentication, by design for this scope: every
-  question is answered on its own, and access control is left to where the API is deployed
-  (Compose publishes it on `127.0.0.1` only).
+- A follow-up question costs one extra language model call to condense it. The rewrite is
+  a single short question, so on CPU it added about 2 s to a 42 s answer in one measured
+  follow-up, not a second full answer.
+- Small models may condense poorly: a rewrite that drops the subject retrieves the wrong
+  passages. `search_query` in the response shows what was searched for.
+- There is no authentication, by design for this scope: access control is left to where
+  the API is deployed (Compose publishes it on `127.0.0.1` only).
 
 ## Quality checks
 
@@ -459,7 +515,7 @@ oncall-rag/
 │   │   ├── config.py           # pydantic-settings: common, ingest and query settings
 │   │   ├── logging.py
 │   │   ├── errors.py           # application exceptions
-│   │   ├── models.py           # Document, Chunk, Passage
+│   │   ├── models.py           # Document, Chunk, Passage, ChatMessage
 │   │   ├── ports.py            # ABCs: Embedder, DocumentIndex, PassageSearch, LanguageModel
 │   │   └── adapters/
 │   │       ├── embeddings/openai_compatible.py
@@ -478,7 +534,7 @@ oncall-rag/
 │       ├── routers/            # POST /ask (exception -> HTTPException), GET /health
 │       ├── services/           # AnswerService: runs the graph, builds the response
 │       ├── schemas/            # request and response bodies
-│       └── rag/                # graph state, prompts, retrieve -> generate | no_context
+│       └── rag/                # graph state, prompts, [condense ->] retrieve -> generate
 ├── tests/
 │   ├── fakes.py                # FakeEmbedder, InMemoryVectorStore, FakeLanguageModel
 │   ├── fixtures/docs/          # small test documents

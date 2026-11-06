@@ -1,11 +1,13 @@
 """Chat completions through an OpenAI-compatible API: OpenRouter in the cloud, Ollama locally."""
 
 import asyncio
+from collections.abc import Sequence
 
 import openai
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from oncall_rag.shared.errors import ProviderResponseError
+from oncall_rag.shared.models import ChatMessage, ChatRole
 from oncall_rag.shared.ports import LanguageModel
 
 # Low temperature: answers should follow the passages, not vary between calls.
@@ -28,11 +30,10 @@ class OpenAICompatibleLLM(LanguageModel):
         self._model = model
         self._call_slots = asyncio.Semaphore(max_concurrency)
 
-    async def complete(self, system_prompt: str, user_prompt: str) -> str:
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+    async def complete(
+        self, system_prompt: str, user_prompt: str, history: Sequence[ChatMessage] = ()
+    ) -> str:
+        messages = _chat_messages(system_prompt, user_prompt, history)
         async with self._call_slots:
             completion = await self._client.chat.completions.create(
                 model=self._model,
@@ -41,6 +42,22 @@ class OpenAICompatibleLLM(LanguageModel):
                 max_tokens=MAX_ANSWER_TOKENS,
             )
         return _answer_text(completion)
+
+
+def _chat_messages(
+    system_prompt: str, user_prompt: str, history: Sequence[ChatMessage]
+) -> list[ChatCompletionMessageParam]:
+    messages: list[ChatCompletionMessageParam] = [{"role": "system", "content": system_prompt}]
+    for message in history:
+        messages.append(_history_message(message))
+    messages.append({"role": "user", "content": user_prompt})
+    return messages
+
+
+def _history_message(message: ChatMessage) -> ChatCompletionMessageParam:
+    if message.role is ChatRole.USER:
+        return {"role": "user", "content": message.content}
+    return {"role": "assistant", "content": message.content}
 
 
 def _answer_text(completion: ChatCompletion) -> str:

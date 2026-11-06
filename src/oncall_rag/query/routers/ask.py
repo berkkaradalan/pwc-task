@@ -16,7 +16,7 @@ router = APIRouter()
 @router.post("/ask")
 async def ask(request: AskRequest, answer_service: AnswerServiceDependency) -> AskResponse:
     try:
-        return await answer_service.answer(request.question)
+        return await answer_service.answer(request.question, request.history)
     except openai.APITimeoutError as error:
         logger.warning("Answering failed: %s", error)
         raise HTTPException(

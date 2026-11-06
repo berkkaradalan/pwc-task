@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import PurePosixPath
 
 
@@ -44,3 +45,18 @@ class Passage:
     heading_path: str
     text: str
     score: float
+
+
+class ChatRole(StrEnum):
+    """Roles a client may send. There is no system role, so clients cannot inject instructions."""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    """An earlier turn of the conversation."""
+
+    role: ChatRole
+    content: str

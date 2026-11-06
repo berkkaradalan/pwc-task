@@ -7,6 +7,7 @@ import pytest
 
 from oncall_rag.shared.adapters.llm.openai_compatible import OpenAICompatibleLLM
 from oncall_rag.shared.errors import ProviderResponseError
+from oncall_rag.shared.models import ChatMessage, ChatRole
 
 MODEL = "test-model"
 
@@ -54,6 +55,30 @@ async def test_returns_the_answer_and_sends_both_messages() -> None:
     assert payload["messages"] == [
         {"role": "system", "content": "system rules"},
         {"role": "user", "content": "the question"},
+    ]
+
+
+async def test_history_is_sent_between_the_system_and_the_user_message() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(json.loads(request.content))
+        return httpx2.Response(200, json=completion_body("Because it deletes every key."))
+
+    llm = make_llm(httpx2.MockTransport(handler))
+    history = [
+        ChatMessage(ChatRole.USER, "Should I run FLUSHALL?"),
+        ChatMessage(ChatRole.ASSISTANT, "No."),
+    ]
+
+    await llm.complete("system rules", "Why not?", history)
+
+    [payload] = requests
+    assert payload["messages"] == [
+        {"role": "system", "content": "system rules"},
+        {"role": "user", "content": "Should I run FLUSHALL?"},
+        {"role": "assistant", "content": "No."},
+        {"role": "user", "content": "Why not?"},
     ]
 
 
