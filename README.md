@@ -52,13 +52,19 @@ every document again. It is required after changing `EMBEDDING_MODEL` or `EMBEDD
 (ingestion refuses to run otherwise) and recommended after changing the chunk settings.
 
 The command exits with `0` on success, `1` on fatal errors (database or Ollama
-unreachable, index incompatible with the configuration) and `2` on invalid configuration.
+unreachable, documents folder missing, index incompatible with the configuration, an
+embedding with the wrong length) and `2` on invalid configuration. Invalid settings are
+logged by name and reason, never with their values.
 
 ## Ingestion design
 
 **Flow.** `load -> hash -> skip unchanged -> chunk -> embed -> replace -> prune`
-(`ingest/pipeline.py`). The pipeline only depends on the `Embedder` and `VectorStore`
-ports; `ingest/wiring.py` wires the Ollama and pgvector adapters.
+(`ingest/pipeline.py`). The pipeline only depends on the `Embedder` and `DocumentIndex`
+ports; `ingest/wiring.py` wires the embedding and pgvector adapters. Ports
+(`shared/ports.py`) are `abc.ABC` classes; each adapter and each test fake inherits from
+the ports it implements. The vector store is split by consumer: ingestion writes through
+`DocumentIndex`, the query service reads through `PassageSearch`, and `PgVectorStore`
+implements both.
 
 **Loading.** Optional YAML front matter (parsed with `python-frontmatter`) provides
 `title`, `service`, `owner_team` and `last_reviewed`; the title falls back to the file
@@ -88,13 +94,16 @@ file content only, so changing the chunk settings needs `--reindex`.
 **Embeddings.** `qwen3-embedding:0.6b` via Ollama: it runs locally on CPU, is
 multilingual, produces 1024-dimensional vectors and works with long inputs. It is
 instruction-aware, so queries get an instruction prefix and documents do not; this
-detail stays in the Ollama adapter. Requests are batched (`EMBEDDING_BATCH_SIZE`), use
-explicit timeouts, retry connection errors and 5xx responses up to three attempts with
-exponential backoff (`tenacity`), and every returned vector is checked against
-`EMBEDDING_DIM`.
+detail stays in the embedding adapter. The adapter uses the same `openai` SDK as the
+language model client, against Ollama's OpenAI-compatible endpoint
+(`${EMBEDDING_BASE_URL}/v1/embeddings`, float encoding, which returns the same vectors as
+Ollama's native `/api/embed`). Requests are batched (`EMBEDDING_BATCH_SIZE`), use explicit
+timeouts, are retried by the SDK (connection errors, timeouts, 408, 409, 429 and 5xx; three
+attempts in total), and every returned vector is checked against `EMBEDDING_DIM`.
 
 **Storage.** `documents` and `chunks` (with `ON DELETE CASCADE`) in PostgreSQL, with an
-HNSW index using cosine distance, which limits `EMBEDDING_DIM` to 2000. The application
+HNSW index using cosine distance, which limits `EMBEDDING_DIM` to 2000 (pgvector rejects
+the index above that). The application
 creates the tables, because the vector column dimension comes from `EMBEDDING_DIM`;
 `sql/init.sql` only enables the `vector` extension. Each document records its embedding
 model. If the stored model or dimension differs from the configuration, ingestion stops
@@ -111,7 +120,8 @@ docker compose up -d --build --wait api
 This runs ingestion first (`api` starts only after `ingest` completed successfully), then
 serves the API on `127.0.0.1:${API_HOST_PORT}` (default 8000). The container is healthy
 once `GET /health` answers `200`. To run the API on the host instead, start
-`docker compose up -d db ollama ollama-init`, set `LLM_BASE_URL` in `.env` to the host
+`docker compose up -d db ollama ollama-init`, run ingestion (see
+[Running ingestion](#running-ingestion)), set `LLM_BASE_URL` in `.env` to the host
 address (`http://localhost:${OLLAMA_HOST_PORT}/v1` in local mode), and run
 `uv run uvicorn oncall_rag.query.main:app`.
 
@@ -169,16 +179,16 @@ curl -s localhost:8000/ask -H 'Content-Type: application/json' -d '{"question": 
 `503 {"detail": "failed"}` otherwise; it never calls the language model. The OpenAPI docs
 are at `/docs`.
 
-Errors use FastAPI's default bodies. The `/ask` route translates the application
-exceptions into `HTTPException` with a short, fixed `detail`; the exception text, which may
-name internal hosts, is only logged.
+Errors use FastAPI's default bodies. Adapters let the `openai` and `psycopg` exceptions
+propagate unchanged; the `/ask` route translates them into `HTTPException` with a short,
+fixed `detail`. The exception text, which may name internal hosts, is only logged.
 
 | Status | Body | Cause |
 |---|---|---|
 | 422 | `{"detail": [...]}` | the request body is invalid |
-| 502 | `{"detail": "..."}` | the language model or embedding service rejected the request (e.g. bad API key, unknown model) or gave no answer |
-| 503 | `{"detail": "..."}` | the language model, the embedding service or the database is unreachable, overloaded (429) or failing (5xx) |
-| 504 | `{"detail": "..."}` | the language model did not answer within `LLM_TIMEOUT_SECONDS` |
+| 502 | `{"detail": "..."}` | the language model or embedding service rejected the request (e.g. bad API key, unknown model), or its answer is unusable (empty answer, wrong vector length) |
+| 503 | `{"detail": "..."}` | the language model or embedding service is unreachable, overloaded (429) or failing (5xx), or the database is unreachable |
+| 504 | `{"detail": "..."}` | the language model or embedding service did not answer in time (`LLM_TIMEOUT_SECONDS` for the language model) |
 | 500 | `Internal Server Error` (plain text) | anything unexpected; the traceback is only in the logs |
 
 ## Running modes
@@ -258,8 +268,9 @@ of five unrelated questions 0.20 to 0.41 (the highest being an IT question the d
 not cover, about single sign-on for an HR portal). Re-check it after changing the
 documents or the embedding model.
 
-**Startup.** The service refuses to start if the index was built with another embedding
-model or dimension; the logged error names the mismatch, and `--reindex` (see
+**Startup.** The service refuses to start if the index has not been built yet (run
+ingestion first; only ingestion creates the schema) or was built with another embedding
+model or dimension; the logged error names the problem, and `--reindex` (see
 [Re-indexing](#re-indexing)) rebuilds the index. The database pool, the embedding client
 and the language model client are closed on shutdown.
 
@@ -276,7 +287,7 @@ timeout is reported after up to twice `LLM_TIMEOUT_SECONDS`.
 retrieval settings. Each `POST /ask` calls `AnswerService.answer()`, which runs
 `graph.ainvoke({"question": ...})` and so creates a new state for that invocation; the
 question, passages and answer never leave it. The application keeps no module-level mutable
-state: `app.state` holds only the objects built at startup (answer service, vector store),
+state: `app.state` holds only the objects built at startup (answer service, passage search),
 and module-level names are constants. Database access goes
 through a `psycopg-pool` connection pool (`DB_POOL_MAX_SIZE`, default 10). Every store call
 borrows a connection for one statement or one transaction and returns it, so two requests
@@ -290,8 +301,8 @@ and generation when several run at once.
 
 **Implemented.** A question can wait in three places: the embedding call (HTTP to Ollama),
 the vector search (PostgreSQL) and the answer (HTTP to the language model, seconds to
-tens of seconds). All three use async clients (`httpx.AsyncClient`, the async psycopg pool,
-`AsyncOpenAI`), so while one request waits for its answer the same process keeps serving
+tens of seconds). All three use async clients (`AsyncOpenAI` for both models, the async
+psycopg pool), so while one request waits for its answer the same process keeps serving
 others: health checks, retrieval for new questions and `no_relevant_context` answers. The
 API itself does no CPU-heavy work (building a prompt is string formatting), so one uvicorn
 process is enough while time is spent waiting on the model. Ingestion is a separate
@@ -449,9 +460,9 @@ oncall-rag/
 │   │   ├── logging.py
 │   │   ├── errors.py           # application exceptions
 │   │   ├── models.py           # Document, Chunk, Passage
-│   │   ├── ports.py            # Protocols: Embedder, VectorStore, LanguageModel
+│   │   ├── ports.py            # ABCs: Embedder, DocumentIndex, PassageSearch, LanguageModel
 │   │   └── adapters/
-│   │       ├── embeddings/ollama.py
+│   │       ├── embeddings/openai_compatible.py
 │   │       ├── llm/openai_compatible.py
 │   │       └── vectorstore/pgvector.py
 │   ├── ingest/                 # `python -m oncall_rag.ingest`
@@ -462,7 +473,7 @@ oncall-rag/
 │   │   └── pipeline.py         # load -> hash -> chunk -> embed -> replace -> prune
 │   └── query/                  # `uvicorn oncall_rag.query.main:app`
 │       ├── main.py             # app factory and lifespan
-│       ├── dependencies.py     # Depends() providers: AnswerService, VectorStore
+│       ├── dependencies.py     # Depends() providers: AnswerService, PassageSearch
 │       ├── wiring.py           # composition root: builds adapters, the graph, AnswerService
 │       ├── routers/            # POST /ask (exception -> HTTPException), GET /health
 │       ├── services/           # AnswerService: runs the graph, builds the response

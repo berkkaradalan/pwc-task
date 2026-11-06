@@ -14,18 +14,12 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from oncall_rag.shared.errors import (
-    ConfigError,
-    EmbeddingModelMismatchError,
-    IndexSchemaMismatchError,
-    VectorStoreUnavailableError,
-)
+from oncall_rag.shared.errors import ReindexRequiredError
 from oncall_rag.shared.models import Chunk, Document, Passage
+from oncall_rag.shared.ports import DocumentIndex, PassageSearch
 
 # Also the longest wait for a free pooled connection.
 CONNECT_TIMEOUT_SECONDS = 10
-# pgvector's HNSW index supports at most this many dimensions for the `vector` type.
-MAX_HNSW_DIMENSIONS = 2000
 
 _CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
 
@@ -94,10 +88,6 @@ Connection = psycopg.AsyncConnection
 async def connect_pgvector_store(
     database_url: str, *, dimension: int, pool_max_size: int
 ) -> AsyncGenerator["PgVectorStore"]:
-    if dimension > MAX_HNSW_DIMENSIONS:
-        raise ConfigError(
-            f"EMBEDDING_DIM must be at most {MAX_HNSW_DIMENSIONS} (pgvector HNSW index limit)"
-        )
     pool = AsyncConnectionPool(
         database_url,
         min_size=1,
@@ -109,8 +99,7 @@ async def connect_pgvector_store(
         timeout=CONNECT_TIMEOUT_SECONDS,
         open=False,
     )
-    async with _database_errors():
-        await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
+    await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
     async with pool:
         yield PgVectorStore(pool, dimension=dimension)
 
@@ -120,38 +109,26 @@ async def _configure_connection(connection: Connection) -> None:
     await register_vector_async(connection)
 
 
-@asynccontextmanager
-async def _database_errors() -> AsyncGenerator[None]:
-    try:
-        yield
-    except psycopg.OperationalError as error:
-        raise VectorStoreUnavailableError(f"PostgreSQL is unavailable: {error}") from error
-
-
-class PgVectorStore:
+class PgVectorStore(DocumentIndex, PassageSearch):
     def __init__(self, pool: AsyncConnectionPool[Connection], *, dimension: int) -> None:
         self._pool = pool
         self._dimension = dimension
 
     async def initialize(self) -> None:
-        async with self._connection() as connection:
-            stored = await self._stored_dimension(connection)
-            if stored is not None and stored != self._dimension:
-                raise IndexSchemaMismatchError(stored, self._dimension)
-            async with connection.transaction():
-                await self._create_schema(connection)
+        async with self._pool.connection() as connection, connection.transaction():
+            await self._create_schema(connection)
 
     async def reset(self) -> None:
-        async with self._connection() as connection, connection.transaction():
+        async with self._pool.connection() as connection, connection.transaction():
             await connection.execute(_DROP_SCHEMA)
             await self._create_schema(connection)
 
     async def ping(self) -> None:
-        async with self._connection() as connection:
+        async with self._pool.connection() as connection:
             await connection.execute("SELECT 1")
 
     async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
-        async with self._connection() as connection:
+        async with self._pool.connection() as connection:
             cursor = await connection.execute(
                 _SEARCH, {"vector": Vector(list(vector)), "top_k": top_k}
             )
@@ -162,17 +139,23 @@ class PgVectorStore:
         ]
 
     async def list_sources(self) -> set[str]:
-        async with self._connection() as connection:
+        async with self._pool.connection() as connection:
             cursor = await connection.execute("SELECT source FROM documents")
             return {row[0] for row in await cursor.fetchall()}
 
     async def ensure_compatible(self, embedding_model: str) -> None:
-        foreign = await self._stored_embedding_models() - {embedding_model}
+        async with self._pool.connection() as connection:
+            self._check_dimension(await self._stored_dimension(connection))
+            foreign = await self._stored_embedding_models(connection) - {embedding_model}
         if foreign:
-            raise EmbeddingModelMismatchError(foreign, embedding_model)
+            stored = ", ".join(sorted(foreign))
+            raise ReindexRequiredError(
+                f"The index contains vectors from embedding model(s) [{stored}], "
+                f"but EMBEDDING_MODEL is '{embedding_model}'."
+            )
 
     async def get_content_hash(self, source: str) -> str | None:
-        async with self._connection() as connection:
+        async with self._pool.connection() as connection:
             cursor = await connection.execute(
                 "SELECT content_hash FROM documents WHERE source = %s", (source,)
             )
@@ -186,21 +169,16 @@ class PgVectorStore:
         embeddings: Sequence[Sequence[float]],
         embedding_model: str,
     ) -> None:
-        async with self._connection() as connection, connection.transaction():
+        async with self._pool.connection() as connection, connection.transaction():
             document_id = await self._upsert_document(connection, document, embedding_model)
             await connection.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
             await self._insert_chunks(connection, document_id, chunks, embeddings)
 
     async def delete_documents(self, sources: Collection[str]) -> None:
-        async with self._connection() as connection:
+        async with self._pool.connection() as connection:
             await connection.execute(
                 "DELETE FROM documents WHERE source = ANY(%s)", (list(sources),)
             )
-
-    @asynccontextmanager
-    async def _connection(self) -> AsyncGenerator[Connection]:
-        async with _database_errors(), self._pool.connection() as connection:
-            yield connection
 
     async def _upsert_document(
         self, connection: Connection, document: Document, embedding_model: str
@@ -242,10 +220,20 @@ class PgVectorStore:
         async with connection.cursor() as cursor:
             await cursor.executemany(_INSERT_CHUNK, rows)
 
-    async def _stored_embedding_models(self) -> set[str]:
-        async with self._connection() as connection:
-            cursor = await connection.execute("SELECT DISTINCT embedding_model FROM documents")
-            return {row[0] for row in await cursor.fetchall()}
+    def _check_dimension(self, stored_dimension: int | None) -> None:
+        if stored_dimension is None:
+            raise ReindexRequiredError(
+                "The index has not been built yet. Run the ingest service first."
+            )
+        if stored_dimension != self._dimension:
+            raise ReindexRequiredError(
+                f"The index stores {stored_dimension}-dimensional vectors, "
+                f"but EMBEDDING_DIM is {self._dimension}."
+            )
+
+    async def _stored_embedding_models(self, connection: Connection) -> set[str]:
+        cursor = await connection.execute("SELECT DISTINCT embedding_model FROM documents")
+        return {row[0] for row in await cursor.fetchall()}
 
     async def _stored_dimension(self, connection: Connection) -> int | None:
         cursor = await connection.execute(_STORED_DIMENSION)

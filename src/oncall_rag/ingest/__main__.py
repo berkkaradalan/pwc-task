@@ -6,9 +6,13 @@ import logging
 import sys
 from enum import IntEnum
 
+import openai
+import psycopg
+from pydantic import ValidationError
+
 from oncall_rag.ingest.wiring import ingestion_pipeline
-from oncall_rag.shared.config import IngestSettings, load_settings
-from oncall_rag.shared.errors import ConfigError, OncallRagError, ReindexRequiredError
+from oncall_rag.shared.config import IngestSettings
+from oncall_rag.shared.errors import ProviderResponseError, ReindexRequiredError
 from oncall_rag.shared.logging import configure_logging
 
 logger = logging.getLogger("oncall_rag.ingest")
@@ -26,11 +30,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging()
     try:
-        settings = load_settings(IngestSettings)
+        settings = IngestSettings()  # type: ignore[call-arg]  # values come from the environment
         asyncio.run(run_ingestion(settings, reindex=args.reindex))
-    except OncallRagError as error:
-        logger.error("Ingestion failed: %s", describe_failure(error))
-        return exit_code_for(error)
+    except ValidationError as error:
+        logger.error("Invalid configuration: %s", error)
+        return ExitCode.CONFIG_ERROR
+    except ReindexRequiredError as error:
+        logger.error("Ingestion failed: %s %s", error, REINDEX_HINT)
+        return ExitCode.FAILURE
+    except (NotADirectoryError, ProviderResponseError, openai.OpenAIError, psycopg.Error) as error:
+        logger.error("Ingestion failed: %s", error)
+        return ExitCode.FAILURE
     return ExitCode.OK
 
 
@@ -51,18 +61,6 @@ async def run_ingestion(settings: IngestSettings, *, reindex: bool) -> None:
     logger.info("Ingesting %s with embedding model %s", settings.docs_dir, settings.embedding_model)
     async with ingestion_pipeline(settings) as pipeline:
         await pipeline.run(settings.docs_dir, reindex=reindex)
-
-
-def exit_code_for(error: OncallRagError) -> ExitCode:
-    if isinstance(error, ConfigError):
-        return ExitCode.CONFIG_ERROR
-    return ExitCode.FAILURE
-
-
-def describe_failure(error: OncallRagError) -> str:
-    if isinstance(error, ReindexRequiredError):
-        return f"{error} {REINDEX_HINT}"
-    return str(error)
 
 
 if __name__ == "__main__":

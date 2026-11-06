@@ -1,53 +1,52 @@
 """Interfaces the application depends on. Concrete providers live in `adapters/`."""
 
+from abc import ABC, abstractmethod
 from collections.abc import Collection, Sequence
-from typing import Protocol
 
 from oncall_rag.shared.models import Chunk, Document, Passage
 
 
-class Embedder(Protocol):
+class Embedder(ABC):
+    """Implemented by OpenAICompatibleEmbedder; FakeEmbedder in tests."""
+
     @property
+    @abstractmethod
     def model_name(self) -> str:
         """Identifier stored with every vector so different models are never mixed."""
-        ...
 
+    @abstractmethod
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed passages for indexing. Returns one vector per input, in order."""
-        ...
 
+    @abstractmethod
     async def embed_query(self, text: str) -> list[float]:
         """Embed a search query. May format the query differently from documents."""
-        ...
 
 
-class VectorStore(Protocol):
+class DocumentIndex(ABC):
+    """Implemented by PgVectorStore; InMemoryVectorStore in tests."""
+
+    @abstractmethod
     async def initialize(self) -> None:
-        """Create the schema if missing and check it matches the configuration."""
-        ...
+        """Create the schema if it is missing."""
 
+    @abstractmethod
     async def reset(self) -> None:
         """Drop all indexed data and recreate the schema from the current configuration."""
-        ...
 
-    async def ping(self) -> None:
-        """Run a trivial query. Raises VectorStoreUnavailableError if the database is down."""
-        ...
-
-    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
-        """The `top_k` chunks closest to `vector`, most similar first."""
-        ...
-
-    async def list_sources(self) -> set[str]: ...
-
+    @abstractmethod
     async def ensure_compatible(self, embedding_model: str) -> None:
-        """Raise EmbeddingModelMismatchError if the index holds vectors of another model."""
-        ...
+        """Raise ReindexRequiredError unless the index exists with this model and dimension."""
 
+    @abstractmethod
+    async def list_sources(self) -> set[str]:
+        """Sources of all indexed documents."""
+
+    @abstractmethod
     async def get_content_hash(self, source: str) -> str | None:
         """Stored content hash for `source`, or None if it is not indexed."""
-        ...
 
+    @abstractmethod
     async def replace_document(
         self,
         document: Document,
@@ -56,14 +55,31 @@ class VectorStore(Protocol):
         embedding_model: str,
     ) -> None:
         """Atomically upsert the document and replace all of its chunks."""
-        ...
 
+    @abstractmethod
     async def delete_documents(self, sources: Collection[str]) -> None:
         """Delete documents together with their chunks."""
-        ...
 
 
-class LanguageModel(Protocol):
+class PassageSearch(ABC):
+    """Implemented by PgVectorStore; InMemoryVectorStore in tests."""
+
+    @abstractmethod
+    async def ensure_compatible(self, embedding_model: str) -> None:
+        """Raise ReindexRequiredError unless the index exists with this model and dimension."""
+
+    @abstractmethod
+    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
+        """The `top_k` chunks closest to `vector`, most similar first."""
+
+    @abstractmethod
+    async def ping(self) -> None:
+        """Run a trivial query, so it raises if the database is unreachable."""
+
+
+class LanguageModel(ABC):
+    """Implemented by OpenAICompatibleLLM; FakeLanguageModel in tests."""
+
+    @abstractmethod
     async def complete(self, system_prompt: str, user_prompt: str) -> str:
         """The model's answer to one system + user message pair."""
-        ...

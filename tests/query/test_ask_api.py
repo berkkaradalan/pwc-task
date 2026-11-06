@@ -1,3 +1,7 @@
+import httpx2
+import openai
+import psycopg
+import psycopg_pool
 import pytest
 from fastapi.testclient import TestClient
 
@@ -5,18 +9,17 @@ from oncall_rag.query.dependencies import get_answer_service
 from oncall_rag.query.main import create_app
 from oncall_rag.query.rag.prompts import NO_CONTEXT_ANSWER
 from oncall_rag.query.schemas.ask import EXCERPT_MAX_CHARS, QUESTION_MAX_CHARS, AskResponse
-from oncall_rag.shared.errors import (
-    EmbedderUnavailableError,
-    EmbeddingError,
-    LLMError,
-    LLMTimeoutError,
-    LLMUnavailableError,
-    VectorStoreUnavailableError,
-)
+from oncall_rag.shared.errors import ProviderResponseError
 from oncall_rag.shared.models import Passage
 from tests.fakes import FakeLanguageModel, InMemoryVectorStore
 
 LONG_TEXT = "Check the queue depth. " * 40
+LLM_REQUEST = httpx2.Request("POST", "http://llm.internal/v1/chat/completions")
+
+
+def status_error(error_type: type[openai.APIStatusError], status_code: int) -> Exception:
+    response = httpx2.Response(status_code, request=LLM_REQUEST)
+    return error_type("error from llm.internal", response=response, body=None)
 
 
 def passage(source: str, score: float) -> Passage:
@@ -118,8 +121,8 @@ def client_with_failing_service(error: Exception) -> TestClient:
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [
-        (LLMUnavailableError("connection refused to llm.internal"), 503),
-        (LLMTimeoutError("no answer in time"), 504),
+        (openai.APIConnectionError(request=LLM_REQUEST), 503),
+        (openai.APITimeoutError(request=LLM_REQUEST), 504),
     ],
 )
 def test_llm_failures_map_to_gateway_errors(
@@ -141,12 +144,14 @@ def test_llm_failures_map_to_gateway_errors(
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [
-        pytest.param(LLMTimeoutError("no answer from llm.internal"), 504, id="llm-timeout"),
-        pytest.param(EmbedderUnavailableError("llm.internal down"), 503, id="embedder-down"),
-        pytest.param(VectorStoreUnavailableError("llm.internal down"), 503, id="store-down"),
-        pytest.param(LLMUnavailableError("llm.internal down"), 503, id="llm-down"),
-        pytest.param(EmbeddingError("llm.internal rejected it"), 502, id="embedding-error"),
-        pytest.param(LLMError("llm.internal rejected it"), 502, id="llm-error"),
+        pytest.param(openai.APITimeoutError(request=LLM_REQUEST), 504, id="timeout"),
+        pytest.param(openai.APIConnectionError(request=LLM_REQUEST), 503, id="connection"),
+        pytest.param(status_error(openai.RateLimitError, 429), 503, id="rate-limit"),
+        pytest.param(status_error(openai.InternalServerError, 500), 503, id="server-error"),
+        pytest.param(psycopg.OperationalError("db.internal down"), 503, id="database-down"),
+        pytest.param(psycopg_pool.PoolTimeout("db.internal pool"), 503, id="pool-timeout"),
+        pytest.param(status_error(openai.AuthenticationError, 401), 502, id="rejected"),
+        pytest.param(ProviderResponseError("llm.internal empty"), 502, id="unusable-answer"),
     ],
 )
 def test_service_failures_map_to_http_errors_without_internal_details(
@@ -157,7 +162,9 @@ def test_service_failures_map_to_http_errors_without_internal_details(
     response = client.post("/ask", json={"question": "How do I drain the backlog?"})
 
     assert response.status_code == status_code
-    assert "llm.internal" not in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert "llm.internal" not in detail
+    assert "db.internal" not in detail
 
 
 def test_unexpected_error_returns_a_generic_500() -> None:

@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from oncall_rag.shared.config import IngestSettings, load_settings
-from oncall_rag.shared.errors import ConfigError
+from oncall_rag.shared.config import IngestSettings
 
 SECRET_URL = "postgresql://user:top-secret-password@db/test"
 
@@ -23,29 +23,28 @@ def required_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
             {"CHUNK_MAX_CHARS": "1500", "CHUNK_OVERLAP_CHARS": "5000"},
             "CHUNK_OVERLAP_CHARS must be smaller than CHUNK_MAX_CHARS",
         ),
+        ({"EMBEDDING_DIM": "not-a-number"}, "embedding_dim"),
     ],
 )
-def test_invalid_settings_raise_config_error_without_input_values(
+def test_invalid_settings_raise_without_input_values(
     monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str], expected: str
 ) -> None:
     for name, value in overrides.items():
         monkeypatch.setenv(name, value)
 
-    with pytest.raises(ConfigError) as error:
-        load_settings(IngestSettings)
+    with pytest.raises(ValidationError) as error:
+        IngestSettings()  # type: ignore[call-arg]
 
     message = str(error.value)
-    assert message.startswith("Invalid configuration: ")
     assert expected in message
     assert "top-secret-password" not in message
-    assert error.value.__cause__ is None
-    assert error.value.__suppress_context__ is True
+    assert "not-a-number" not in message
 
 
 def test_valid_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EMBEDDING_DIM", "768")
 
-    settings = load_settings(IngestSettings)
+    settings = IngestSettings()  # type: ignore[call-arg]
 
     assert settings.embedding_dim == 768
     assert settings.database_url.get_secret_value() == SECRET_URL

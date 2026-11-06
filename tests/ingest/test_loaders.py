@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from oncall_rag.ingest.loaders import DocumentRejectedError, load_documents, parse_document
-from oncall_rag.shared.errors import DocsDirectoryNotFoundError
 
 
 def test_front_matter_is_parsed_into_title_and_metadata(fixture_docs: Path) -> None:
@@ -67,7 +66,7 @@ def test_hidden_files_are_ignored(fixture_docs: Path) -> None:
 
 
 def test_missing_folder_is_a_fatal_error(tmp_path: Path) -> None:
-    with pytest.raises(DocsDirectoryNotFoundError):
+    with pytest.raises(NotADirectoryError):
         load_documents(tmp_path / "does-not-exist")
 
 

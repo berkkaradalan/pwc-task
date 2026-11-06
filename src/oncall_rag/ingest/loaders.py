@@ -10,7 +10,6 @@ import frontmatter
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from oncall_rag.shared.errors import DocsDirectoryNotFoundError
 from oncall_rag.shared.models import Document
 
 logger = logging.getLogger(__name__)
@@ -76,7 +75,7 @@ def load_documents(docs_dir: Path) -> LoadResult:
     instead of failing the run.
     """
     if not docs_dir.is_dir():
-        raise DocsDirectoryNotFoundError(f"Documents folder not found: {docs_dir}")
+        raise NotADirectoryError(f"Documents folder not found: {docs_dir}")
 
     documents: list[Document] = []
     skipped: list[SkippedFile] = []

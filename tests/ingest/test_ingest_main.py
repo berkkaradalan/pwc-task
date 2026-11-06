@@ -1,21 +1,22 @@
 import logging
+from pathlib import Path
 
+import httpx2
+import openai
+import psycopg
 import pytest
 from pydantic import SecretStr
 
 from oncall_rag.ingest import __main__ as ingest_main
 from oncall_rag.ingest.__main__ import ExitCode
 from oncall_rag.shared.config import IngestSettings
-from oncall_rag.shared.errors import (
-    ConfigError,
-    EmbedderUnavailableError,
-    EmbeddingModelMismatchError,
-    VectorStoreUnavailableError,
-)
+from oncall_rag.shared.errors import ProviderResponseError, ReindexRequiredError
+
+EMBEDDING_REQUEST = httpx2.Request("POST", "http://ollama.test/v1/embeddings")
 
 
-def valid_settings(settings_class: type[IngestSettings]) -> IngestSettings:
-    return settings_class(
+def valid_settings() -> IngestSettings:
+    return IngestSettings(
         database_url=SecretStr("postgresql://user:password@db/test"),
         embedding_base_url="http://ollama.test",
         _env_file=None,  # type: ignore[call-arg]  # pydantic-settings init option, unknown to type checkers
@@ -39,7 +40,7 @@ class FakeRunIngestion:
 def run_ingestion(monkeypatch: pytest.MonkeyPatch) -> FakeRunIngestion:
     fake = FakeRunIngestion()
     monkeypatch.setattr(ingest_main, "run_ingestion", fake)
-    monkeypatch.setattr(ingest_main, "load_settings", valid_settings)
+    monkeypatch.setattr(ingest_main, "IngestSettings", valid_settings)
     return fake
 
 
@@ -58,25 +59,30 @@ def test_reindex_flag_is_passed_through(run_ingestion: FakeRunIngestion) -> None
 def test_config_error_exits_with_2_without_running_ingestion(
     run_ingestion: FakeRunIngestion,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    def broken_settings(settings_class: type[IngestSettings]) -> IngestSettings:
-        raise ConfigError("Invalid configuration: DATABASE_URL: Field required")
-
-    monkeypatch.setattr(ingest_main, "load_settings", broken_settings)
+    # The real settings class, outside the repository so a developer's .env is never read.
+    monkeypatch.setattr(ingest_main, "IngestSettings", IngestSettings)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "http://ollama.test")
 
     with caplog.at_level(logging.ERROR):
         assert ingest_main.main([]) == ExitCode.CONFIG_ERROR == 2
 
     assert run_ingestion.calls == []
-    assert "DATABASE_URL: Field required" in caplog.text
+    assert "database_url" in caplog.text
+    assert "Field required" in caplog.text
 
 
 @pytest.mark.parametrize(
     "error",
     [
-        EmbedderUnavailableError("Ollama is unavailable"),
-        VectorStoreUnavailableError("Cannot connect to PostgreSQL"),
+        pytest.param(openai.APIConnectionError(request=EMBEDDING_REQUEST), id="embedder-down"),
+        pytest.param(psycopg.OperationalError("connection refused"), id="database-down"),
+        pytest.param(ProviderResponseError("wrong vector length"), id="unusable-response"),
+        pytest.param(NotADirectoryError("Documents folder not found"), id="missing-docs"),
     ],
 )
 def test_ingestion_error_exits_with_1(
@@ -93,7 +99,7 @@ def test_ingestion_error_exits_with_1(
 def test_reindex_required_error_exits_with_1_and_suggests_reindex(
     run_ingestion: FakeRunIngestion, caplog: pytest.LogCaptureFixture
 ) -> None:
-    run_ingestion.error = EmbeddingModelMismatchError({"old-model"}, "new-model")
+    run_ingestion.error = ReindexRequiredError("Index models [old-model], configured new-model")
 
     with caplog.at_level(logging.ERROR):
         assert ingest_main.main([]) == ExitCode.FAILURE

@@ -4,13 +4,16 @@ import hashlib
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
-from oncall_rag.shared.errors import EmbeddingModelMismatchError, VectorStoreUnavailableError
+import psycopg
+
+from oncall_rag.shared.errors import ReindexRequiredError
 from oncall_rag.shared.models import Chunk, Document, Passage
+from oncall_rag.shared.ports import DocumentIndex, Embedder, LanguageModel, PassageSearch
 
 FAKE_DIMENSION = 8
 
 
-class FakeEmbedder:
+class FakeEmbedder(Embedder):
     """Deterministic vectors derived from a hash of the text. Records document calls."""
 
     def __init__(self, model_name: str = "fake-embedding-model") -> None:
@@ -45,7 +48,7 @@ class StoredDocument:
     embedding_model: str
 
 
-class InMemoryVectorStore:
+class InMemoryVectorStore(DocumentIndex, PassageSearch):
     """Stores documents in a dict. `search` returns the canned `search_results`."""
 
     def __init__(self) -> None:
@@ -65,7 +68,7 @@ class InMemoryVectorStore:
 
     async def ping(self) -> None:
         if self.is_down:
-            raise VectorStoreUnavailableError("PostgreSQL is unavailable: connection refused")
+            raise psycopg.OperationalError("connection to server at db.internal failed")
 
     async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
         self.search_calls.append((list(vector), top_k))
@@ -80,7 +83,8 @@ class InMemoryVectorStore:
     async def ensure_compatible(self, embedding_model: str) -> None:
         foreign = await self.list_embedding_models() - {embedding_model}
         if foreign:
-            raise EmbeddingModelMismatchError(foreign, embedding_model)
+            stored = ", ".join(sorted(foreign))
+            raise ReindexRequiredError(f"Index models [{stored}], configured {embedding_model}")
 
     async def get_content_hash(self, source: str) -> str | None:
         stored = self.documents.get(source)
@@ -105,7 +109,7 @@ class InMemoryVectorStore:
             del self.documents[source]
 
 
-class FakeLanguageModel:
+class FakeLanguageModel(LanguageModel):
     """Returns `answer`, or raises `error` if set. Records every prompt pair."""
 
     def __init__(self, answer: str = "Fake answer.") -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 from oncall_rag.ingest.chunker import ChunkingConfig, build_embedding_text, chunk_document
 from oncall_rag.ingest.loaders import SkippedFile, load_documents
 from oncall_rag.shared.models import Document
-from oncall_rag.shared.ports import Embedder, VectorStore
+from oncall_rag.shared.ports import DocumentIndex, Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class IngestionReport:
 
 
 class IngestionPipeline:
-    def __init__(self, embedder: Embedder, store: VectorStore, chunking: ChunkingConfig) -> None:
+    def __init__(self, embedder: Embedder, store: DocumentIndex, chunking: ChunkingConfig) -> None:
         self._embedder = embedder
         self._store = store
         self._chunking = chunking

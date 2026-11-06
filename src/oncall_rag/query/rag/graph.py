@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from oncall_rag.query.rag.prompts import NO_CONTEXT_ANSWER, SYSTEM_PROMPT, build_user_prompt
 from oncall_rag.query.rag.state import AnswerStatus, RagState
-from oncall_rag.shared.ports import Embedder, LanguageModel, VectorStore
+from oncall_rag.shared.ports import Embedder, LanguageModel, PassageSearch
 
 RagGraph = CompiledStateGraph[RagState, None, RagState, RagState]
 
@@ -27,7 +27,7 @@ class RetrievalConfig:
 
 
 def build_graph(
-    embedder: Embedder, store: VectorStore, llm: LanguageModel, retrieval: RetrievalConfig
+    embedder: Embedder, store: PassageSearch, llm: LanguageModel, retrieval: RetrievalConfig
 ) -> RagGraph:
     nodes = _Nodes(embedder=embedder, store=store, llm=llm, retrieval=retrieval)
     graph = StateGraph(RagState)
@@ -52,7 +52,7 @@ def route_after_retrieval(state: RagState) -> Node:
 @dataclass(frozen=True, slots=True)
 class _Nodes:
     embedder: Embedder
-    store: VectorStore
+    store: PassageSearch
     llm: LanguageModel
     retrieval: RetrievalConfig
 

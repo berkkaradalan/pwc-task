@@ -4,7 +4,7 @@ import pytest
 
 from oncall_rag.ingest.chunker import ChunkingConfig
 from oncall_rag.ingest.pipeline import IngestionPipeline
-from oncall_rag.shared.errors import DocsDirectoryNotFoundError, EmbeddingModelMismatchError
+from oncall_rag.shared.errors import ReindexRequiredError
 from tests.fakes import FakeEmbedder, InMemoryVectorStore
 
 VALID_SOURCES = ["no-front-matter.md", "notes/database-failover.txt", "payments-outage.md"]
@@ -109,7 +109,7 @@ async def test_embedding_model_mismatch_fails_before_any_work(docs_dir: Path) ->
     snapshot = dict(store.documents)
 
     second, new_embedder, _ = make_pipeline(FakeEmbedder(model_name="new-model"), store)
-    with pytest.raises(EmbeddingModelMismatchError) as error:
+    with pytest.raises(ReindexRequiredError) as error:
         await second.run(docs_dir)
 
     assert "old-model" in str(error.value)
@@ -134,7 +134,7 @@ async def test_reindex_rebuilds_with_the_new_model(docs_dir: Path) -> None:
 async def test_missing_docs_folder_fails_without_touching_the_index(tmp_path: Path) -> None:
     pipeline, _, store = make_pipeline()
 
-    with pytest.raises(DocsDirectoryNotFoundError):
+    with pytest.raises(NotADirectoryError):
         await pipeline.run(tmp_path / "missing", reindex=True)
 
     assert store.reset_calls == 0

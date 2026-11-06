@@ -6,7 +6,7 @@ import openai
 import pytest
 
 from oncall_rag.shared.adapters.llm.openai_compatible import OpenAICompatibleLLM
-from oncall_rag.shared.errors import LLMError, LLMTimeoutError, LLMUnavailableError
+from oncall_rag.shared.errors import ProviderResponseError
 
 MODEL = "test-model"
 
@@ -57,46 +57,40 @@ async def test_returns_the_answer_and_sends_both_messages() -> None:
     ]
 
 
-async def test_timeout_raises_llm_timeout_error() -> None:
+async def test_timeout_propagates_as_the_sdk_error() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ReadTimeout("timed out", request=request)
 
     llm = make_llm(httpx2.MockTransport(handler))
 
-    with pytest.raises(LLMTimeoutError):
+    with pytest.raises(openai.APITimeoutError):
         await llm.complete("system", "user")
 
 
-async def test_connection_error_raises_llm_unavailable_error() -> None:
+async def test_connection_error_propagates_as_the_sdk_error() -> None:
     def handler(request: httpx2.Request) -> httpx2.Response:
         raise httpx2.ConnectError("connection refused", request=request)
 
     llm = make_llm(httpx2.MockTransport(handler))
 
-    with pytest.raises(LLMUnavailableError):
+    with pytest.raises(openai.APIConnectionError):
         await llm.complete("system", "user")
 
 
-@pytest.mark.parametrize("status_code", [429, 500, 503])
-async def test_overload_and_server_errors_raise_llm_unavailable_error(status_code: int) -> None:
+@pytest.mark.parametrize("status_code", [401, 404, 429, 500, 503])
+async def test_error_status_propagates_as_the_sdk_error(status_code: int) -> None:
     llm = make_llm(httpx2.MockTransport(lambda _: httpx2.Response(status_code, json={})))
 
-    with pytest.raises(LLMUnavailableError, match=f"HTTP {status_code}"):
+    with pytest.raises(openai.APIStatusError) as error:
         await llm.complete("system", "user")
 
-
-@pytest.mark.parametrize("status_code", [401, 404])
-async def test_rejected_request_raises_llm_error(status_code: int) -> None:
-    llm = make_llm(httpx2.MockTransport(lambda _: httpx2.Response(status_code, json={})))
-
-    with pytest.raises(LLMError, match=f"HTTP {status_code}"):
-        await llm.complete("system", "user")
+    assert error.value.status_code == status_code
 
 
-async def test_empty_answer_raises_llm_error() -> None:
+async def test_empty_answer_raises_provider_response_error() -> None:
     llm = make_llm(httpx2.MockTransport(lambda _: httpx2.Response(200, json=completion_body(""))))
 
-    with pytest.raises(LLMError, match="empty answer"):
+    with pytest.raises(ProviderResponseError, match="empty answer"):
         await llm.complete("system", "user")
 
 

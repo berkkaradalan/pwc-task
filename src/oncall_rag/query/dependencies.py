@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from oncall_rag.query.services.answer_service import AnswerService
-from oncall_rag.shared.ports import VectorStore
+from oncall_rag.shared.ports import PassageSearch
 
 
 def get_answer_service(request: Request) -> AnswerService:
@@ -13,10 +13,10 @@ def get_answer_service(request: Request) -> AnswerService:
     return answer_service
 
 
-def get_vector_store(request: Request) -> VectorStore:
-    store: VectorStore = request.app.state.vector_store
-    return store
+def get_passage_search(request: Request) -> PassageSearch:
+    passage_search: PassageSearch = request.app.state.passage_search
+    return passage_search
 
 
 AnswerServiceDependency = Annotated[AnswerService, Depends(get_answer_service)]
-VectorStoreDependency = Annotated[VectorStore, Depends(get_vector_store)]
+PassageSearchDependency = Annotated[PassageSearch, Depends(get_passage_search)]
