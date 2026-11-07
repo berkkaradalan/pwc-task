@@ -15,8 +15,10 @@ services:
       timeout: 5s
       retries: 20
 
+  # Only in local mode: COMPOSE_PROFILES in .env follows RUN_MODE.
   ollama:
     image: ollama/ollama:0.40.5
+    profiles: [local]
     environment:
       # One request at a time and a fixed context keep memory predictable on CPU-only machines.
       OLLAMA_NUM_PARALLEL: "1"
@@ -39,17 +41,16 @@ services:
 
   ollama-init:
     image: ollama/ollama:0.40.5
-    # Pull only the models that are missing, so a restart works offline. Cloud mode needs none.
+    profiles: [local]
+    # Pull only the models that are missing, so a restart works offline.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        if [ "$$RUN_MODE" = cloud ]; then exit 0; fi;
         for model in "$$LOCAL_EMBEDDING_MODEL" "$$LOCAL_LLM_MODEL"; do
         ollama show "$$model" > /dev/null || ollama pull "$$model" || exit 1;
         done
     environment:
       OLLAMA_HOST: http://ollama:11434
-      RUN_MODE: ${RUN_MODE:-local}
       LOCAL_EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:?set LOCAL_EMBEDDING_MODEL in .env}
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:?set LOCAL_LLM_MODEL in .env}
     depends_on:
@@ -70,6 +71,8 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+        # Not started in cloud mode.
+        required: false
 
   api:
     build: .

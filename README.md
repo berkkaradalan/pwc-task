@@ -22,14 +22,16 @@ cp .env.example .env    # then set POSTGRES_PASSWORD and the matching DATABASE_U
 docker compose up --build ingest
 ```
 
-This starts `db` (PostgreSQL + pgvector) and `ollama`, pulls the two local models that are
-not present yet (`ollama-init`, so later runs work offline; it pulls nothing when `RUN_MODE`
-is `cloud`), then runs the one-shot `ingest` service. `data/docs` is mounted read-only, so after editing documents just run
+This starts `db` (PostgreSQL + pgvector) and, in local mode, `ollama`, pulls the two local
+models that are not present yet (`ollama-init`, so later runs work offline), then runs the
+one-shot `ingest` service. In cloud mode the two Ollama services do not start (see
+[Running modes](#running-modes)). `data/docs` is mounted read-only, so after editing documents just run
 the command again.
 
 ### Locally with uv
 
-Run the database and Ollama from Compose, and the ingestion code on the host:
+Run the database and Ollama from Compose (in cloud mode, `db` alone), and the ingestion code
+on the host:
 
 ```bash
 docker compose up -d db ollama ollama-init
@@ -287,6 +289,14 @@ Switching modes changes the embedding model. The next ingestion rebuilds the ind
 [Storage](#ingestion-design)), and until then the API refuses to start.
 `docker compose up -d --build --wait api` runs ingestion first, so it does both.
 
+`ollama` and `ollama-init` are in the Compose profile `local`. `COMPOSE_PROFILES=${RUN_MODE}`
+in `.env` turns it on only in local mode, so `RUN_MODE` stays the only switch; `ingest`
+depends on `ollama-init` with `required: false`, so cloud mode starts without it. A `.env`
+copied from an earlier `.env.example` lacks that line: cloud mode works without it, but
+local mode then starts no Ollama and ingestion exits with `1`, so add the line. After a
+local run, stop the stack with `docker compose --profile '*' down`: a plain
+`docker compose down` while `RUN_MODE` is `cloud` leaves the `ollama` container running.
+
 ### Cloud (OpenRouter)
 
 1. Create an account at [openrouter.ai](https://openrouter.ai), add credits, and create
@@ -297,8 +307,7 @@ Switching modes changes the embedding model. The next ingestion rebuilds the ind
    provider is down, requests fail (`503`, ingestion exits with `1`) instead of silently
    switching to another provider; set another one and run ingestion again, which then
    rebuilds the index.
-3. `docker compose up -d --build --wait api`. `ollama-init` pulls nothing; the `ollama`
-   container still starts, but nothing calls it.
+3. `docker compose up -d --build --wait api`. This starts only `db`, `ingest` and `api`.
 
 ### Local (Ollama)
 
@@ -311,6 +320,10 @@ Local mode is the default and needs no account or key. `ollama-init` pulls:
 
 Both models together use about 4.4 GB of memory once loaded (measured with `ollama ps`),
 and about 3.1 GB of disk.
+
+If `ollama-init` fails (for example, a first pull without network), Compose only warns
+(`optional dependency "ollama-init" didn't complete successfully`) and still starts
+`ingest`, which then exits with `1` on the missing model, so the API does not start.
 
 Compose runs Ollama on the CPU. Expect about 30-50 s per answer, and longer for the first
 question after a start, because a model is loaded on first use (and unloaded after a few
@@ -593,8 +606,8 @@ OLLAMA_MODELS_DIR=./.cache/ollama-models scripts/e2e.sh
 ```
 
 `scripts/e2e.sh` starts the Compose stack with the `compose.ci.yml` override (its own
-project name, no published ports, and `RUN_MODE=local` whatever `.env` says), so it needs
-no secrets. It runs `ingest`
+project name, no published ports, and `RUN_MODE=local` with the `local` profile on, whatever
+`.env` says), so it needs no secrets. It runs `ingest`
 on the sample documents in `data/docs` and fails unless it exits with `0` and the `chunks`
 table is not empty. It then starts `api`, waits until it is healthy, and checks
 (`scripts/e2e_api_checks.py`) that a question the documents answer returns sources and

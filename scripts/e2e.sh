@@ -3,7 +3,8 @@
 # Usage: OLLAMA_MODELS_DIR=<host folder> scripts/e2e.sh
 set -euo pipefail
 
-COMPOSE=(docker compose -f docker-compose.yml -f compose.ci.yml)
+# Always local mode (see compose.ci.yml), so the Ollama services' profile is on whatever .env says.
+COMPOSE=(docker compose -f docker-compose.yml -f compose.ci.yml --profile local)
 
 main() {
     trap stop_stack EXIT

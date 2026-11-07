@@ -7,10 +7,7 @@ services:
     ports: !reset []
 
   # CI has no API key: always local, whatever RUN_MODE says in .env.
-  ollama-init:
-    environment:
-      RUN_MODE: local
-
+  # scripts/e2e.sh also turns on the `local` profile for the Ollama services.
   ingest:
     environment:
       RUN_MODE: local
