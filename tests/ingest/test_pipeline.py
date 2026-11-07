@@ -11,16 +11,28 @@ VALID_SOURCES = ["no-front-matter.md", "notes/database-failover.txt", "payments-
 CHUNKING = ChunkingConfig(max_chars=500, overlap_chars=50)
 
 
-def make_pipeline(
-    embedder: FakeEmbedder | None = None, store: InMemoryVectorStore | None = None
-) -> tuple[IngestionPipeline, FakeEmbedder, InMemoryVectorStore]:
-    embedder = embedder or FakeEmbedder()
-    store = store or InMemoryVectorStore()
-    return IngestionPipeline(embedder=embedder, store=store, chunking=CHUNKING), embedder, store
+def make_pipeline(embedder: FakeEmbedder, store: InMemoryVectorStore) -> IngestionPipeline:
+    return IngestionPipeline(embedder=embedder, store=store, chunking=CHUNKING)
 
 
-async def test_first_run_indexes_all_valid_documents(docs_dir: Path) -> None:
-    pipeline, embedder, store = make_pipeline()
+@pytest.fixture
+def embedder() -> FakeEmbedder:
+    return FakeEmbedder()
+
+
+@pytest.fixture
+def store() -> InMemoryVectorStore:
+    return InMemoryVectorStore()
+
+
+@pytest.fixture
+def pipeline(embedder: FakeEmbedder, store: InMemoryVectorStore) -> IngestionPipeline:
+    return make_pipeline(embedder, store)
+
+
+async def test_first_run_indexes_all_valid_documents(
+    docs_dir: Path, pipeline: IngestionPipeline, embedder: FakeEmbedder, store: InMemoryVectorStore
+) -> None:
 
     report = await pipeline.run(docs_dir)
 
@@ -48,8 +60,9 @@ async def test_first_run_indexes_all_valid_documents(docs_dir: Path) -> None:
     )
 
 
-async def test_second_run_does_no_embedding_work(docs_dir: Path) -> None:
-    pipeline, embedder, store = make_pipeline()
+async def test_second_run_does_no_embedding_work(
+    docs_dir: Path, pipeline: IngestionPipeline, embedder: FakeEmbedder, store: InMemoryVectorStore
+) -> None:
     await pipeline.run(docs_dir)
     calls_after_first_run = len(embedder.document_calls)
     snapshot = dict(store.documents)
@@ -63,8 +76,9 @@ async def test_second_run_does_no_embedding_work(docs_dir: Path) -> None:
     assert store.documents == snapshot
 
 
-async def test_changed_file_is_reindexed(docs_dir: Path) -> None:
-    pipeline, embedder, store = make_pipeline()
+async def test_changed_file_is_reindexed(
+    docs_dir: Path, pipeline: IngestionPipeline, embedder: FakeEmbedder, store: InMemoryVectorStore
+) -> None:
     await pipeline.run(docs_dir)
     embedder.document_calls.clear()
 
@@ -78,8 +92,9 @@ async def test_changed_file_is_reindexed(docs_dir: Path) -> None:
     assert chunk.text == "New procedure text."
 
 
-async def test_deleted_file_is_pruned(docs_dir: Path) -> None:
-    pipeline, _, store = make_pipeline()
+async def test_deleted_file_is_pruned(
+    docs_dir: Path, pipeline: IngestionPipeline, store: InMemoryVectorStore
+) -> None:
     await pipeline.run(docs_dir)
 
     (docs_dir / "notes" / "database-failover.txt").unlink()
@@ -89,8 +104,9 @@ async def test_deleted_file_is_pruned(docs_dir: Path) -> None:
     assert "notes/database-failover.txt" not in store.documents
 
 
-async def test_previously_indexed_file_that_becomes_invalid_is_pruned(docs_dir: Path) -> None:
-    pipeline, _, store = make_pipeline()
+async def test_previously_indexed_file_that_becomes_invalid_is_pruned(
+    docs_dir: Path, pipeline: IngestionPipeline, store: InMemoryVectorStore
+) -> None:
     await pipeline.run(docs_dir)
 
     (docs_dir / "payments-outage.md").write_bytes(b"\xff\xfe broken")
@@ -101,14 +117,16 @@ async def test_previously_indexed_file_that_becomes_invalid_is_pruned(docs_dir: 
     assert "payments-outage.md" not in store.documents
 
 
-async def test_embedding_model_mismatch_fails_before_any_work(docs_dir: Path) -> None:
-    store = InMemoryVectorStore()
-    first, _, _ = make_pipeline(FakeEmbedder(model_name="old-model"), store)
+async def test_embedding_model_mismatch_fails_before_any_work(
+    docs_dir: Path, store: InMemoryVectorStore
+) -> None:
+    first = make_pipeline(FakeEmbedder(model_name="old-model"), store)
     await first.run(docs_dir)
     (docs_dir / "no-front-matter.md").write_text("Changed.\n")
     snapshot = dict(store.documents)
 
-    second, new_embedder, _ = make_pipeline(FakeEmbedder(model_name="new-model"), store)
+    new_embedder = FakeEmbedder(model_name="new-model")
+    second = make_pipeline(new_embedder, store)
     with pytest.raises(ReindexRequiredError) as error:
         await second.run(docs_dir)
 
@@ -118,12 +136,13 @@ async def test_embedding_model_mismatch_fails_before_any_work(docs_dir: Path) ->
     assert store.documents == snapshot
 
 
-async def test_reindex_rebuilds_with_the_new_model(docs_dir: Path) -> None:
-    store = InMemoryVectorStore()
-    first, _, _ = make_pipeline(FakeEmbedder(model_name="old-model"), store)
+async def test_reindex_rebuilds_with_the_new_model(
+    docs_dir: Path, store: InMemoryVectorStore
+) -> None:
+    first = make_pipeline(FakeEmbedder(model_name="old-model"), store)
     await first.run(docs_dir)
 
-    second, _, _ = make_pipeline(FakeEmbedder(model_name="new-model"), store)
+    second = make_pipeline(FakeEmbedder(model_name="new-model"), store)
     report = await second.run(docs_dir, reindex=True)
 
     assert store.reset_calls == 1
@@ -131,8 +150,9 @@ async def test_reindex_rebuilds_with_the_new_model(docs_dir: Path) -> None:
     assert await store.list_embedding_models() == {"new-model"}
 
 
-async def test_missing_docs_folder_fails_without_touching_the_index(tmp_path: Path) -> None:
-    pipeline, _, store = make_pipeline()
+async def test_missing_docs_folder_fails_without_touching_the_index(
+    tmp_path: Path, pipeline: IngestionPipeline, store: InMemoryVectorStore
+) -> None:
 
     with pytest.raises(NotADirectoryError):
         await pipeline.run(tmp_path / "missing", reindex=True)

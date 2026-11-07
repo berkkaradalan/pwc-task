@@ -1,9 +1,12 @@
+from collections.abc import Callable, Sequence
+
 import pytest
 from fastapi.testclient import TestClient
 
-from oncall_rag.query.dependencies import get_answer_service, get_passage_search
+from oncall_rag.query.core.dependencies import get_answer_service, get_passage_search
 from oncall_rag.query.main import create_app
 from oncall_rag.query.rag.graph import RetrievalConfig, build_graph
+from oncall_rag.query.schemas.ask import AskResponse, HistoryMessage
 from oncall_rag.query.services.answer_service import AnswerService
 from tests.fakes import FakeEmbedder, FakeLanguageModel, InMemoryVectorStore
 
@@ -36,3 +39,23 @@ def client(
     app.dependency_overrides[get_answer_service] = lambda: answer_service
     app.dependency_overrides[get_passage_search] = lambda: store
     return TestClient(app)
+
+
+class FailingAnswerService:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def answer(self, question: str, history: Sequence[HistoryMessage]) -> AskResponse:
+        raise self.error
+
+
+@pytest.fixture
+def failing_client() -> Callable[[Exception], TestClient]:
+    """Builds an API whose answer service raises `error`; server errors become responses."""
+
+    def build(error: Exception) -> TestClient:
+        app = create_app()
+        app.dependency_overrides[get_answer_service] = lambda: FailingAnswerService(error)
+        return TestClient(app, raise_server_exceptions=False)
+
+    return build

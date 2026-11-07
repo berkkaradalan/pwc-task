@@ -4,7 +4,7 @@ import openai
 import psycopg
 from fastapi import APIRouter, HTTPException, status
 
-from oncall_rag.query.dependencies import AnswerServiceDependency
+from oncall_rag.query.core.dependencies import AnswerServiceDependency
 from oncall_rag.query.schemas.ask import AskRequest, AskResponse
 from oncall_rag.shared.errors import ProviderResponseError
 

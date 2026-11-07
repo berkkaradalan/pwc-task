@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Callable
 
 import httpx2
 import openai
@@ -7,16 +7,13 @@ import psycopg_pool
 import pytest
 from fastapi.testclient import TestClient
 
-from oncall_rag.query.dependencies import get_answer_service
-from oncall_rag.query.main import create_app
+from oncall_rag.query.core.middleware import REQUEST_ID_HEADER
 from oncall_rag.query.rag.prompts import NO_CONTEXT_ANSWER
 from oncall_rag.query.schemas.ask import (
     EXCERPT_MAX_CHARS,
     HISTORY_MESSAGE_MAX_CHARS,
     MAX_HISTORY_MESSAGES,
     QUESTION_MAX_CHARS,
-    AskResponse,
-    HistoryMessage,
 )
 from oncall_rag.shared.errors import ProviderResponseError
 from oncall_rag.shared.models import ChatMessage, ChatRole, Passage
@@ -203,20 +200,6 @@ def test_condensation_timeout_maps_to_gateway_timeout(
     assert store.search_calls == []
 
 
-class FailingAnswerService:
-    def __init__(self, error: Exception) -> None:
-        self.error = error
-
-    async def answer(self, question: str, history: Sequence[HistoryMessage]) -> AskResponse:
-        raise self.error
-
-
-def client_with_failing_service(error: Exception) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[get_answer_service] = lambda: FailingAnswerService(error)
-    return TestClient(app, raise_server_exceptions=False)
-
-
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [
@@ -254,9 +237,9 @@ def test_llm_failures_map_to_gateway_errors(
     ],
 )
 def test_service_failures_map_to_http_errors_without_internal_details(
-    error: Exception, status_code: int
+    failing_client: Callable[[Exception], TestClient], error: Exception, status_code: int
 ) -> None:
-    client = client_with_failing_service(error)
+    client = failing_client(error)
 
     response = client.post("/ask", json={"question": "How do I drain the backlog?"})
 
@@ -266,10 +249,15 @@ def test_service_failures_map_to_http_errors_without_internal_details(
     assert "db.internal" not in detail
 
 
-def test_unexpected_error_returns_a_generic_500() -> None:
-    client = client_with_failing_service(RuntimeError("secret internal detail"))
+def test_unexpected_error_returns_a_generic_500(
+    failing_client: Callable[[Exception], TestClient],
+) -> None:
+    client = failing_client(RuntimeError("secret internal detail"))
 
     response = client.post("/ask", json={"question": "anything"})
 
     assert response.status_code == 500
-    assert response.text == "Internal Server Error"
+    assert response.json() == {
+        "detail": "Internal server error",
+        "request_id": response.headers[REQUEST_ID_HEADER],
+    }

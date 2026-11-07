@@ -1,7 +1,7 @@
 """PostgreSQL + pgvector vector store.
 
-The schema is created by the application (not by sql/init.sql) because the vector
-column dimension comes from EMBEDDING_DIM.
+The application creates the `vector` extension and the tables; the vector column dimension
+comes from EMBEDDING_DIM.
 """
 
 from collections.abc import AsyncGenerator, Collection, Sequence
@@ -88,12 +88,13 @@ Connection = psycopg.AsyncConnection
 async def connect_pgvector_store(
     database_url: str, *, dimension: int, pool_max_size: int
 ) -> AsyncGenerator["PgVectorStore"]:
+    await _create_extension(database_url)
     pool = AsyncConnectionPool(
         database_url,
         min_size=1,
         max_size=pool_max_size,
         kwargs={"autocommit": True, "connect_timeout": CONNECT_TIMEOUT_SECONDS},
-        configure=_configure_connection,
+        configure=register_vector_async,
         # Replaces connections broken by a database restart before they are handed out.
         check=AsyncConnectionPool.check_connection,
         timeout=CONNECT_TIMEOUT_SECONDS,
@@ -104,9 +105,12 @@ async def connect_pgvector_store(
         yield PgVectorStore(pool, dimension=dimension)
 
 
-async def _configure_connection(connection: Connection) -> None:
-    await connection.execute(_CREATE_EXTENSION)
-    await register_vector_async(connection)
+async def _create_extension(database_url: str) -> None:
+    """Once per process, before the pool: registering the vector type needs the extension."""
+    async with await Connection.connect(
+        database_url, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS
+    ) as connection:
+        await connection.execute(_CREATE_EXTENSION)
 
 
 class PgVectorStore(DocumentIndex, PassageSearch):

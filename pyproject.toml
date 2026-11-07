@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Retrieval-augmented assistant for on-call runbooks"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    # Request ID per API request (X-Request-ID) and a logging filter that adds it to log lines.
+    "asgi-correlation-id>=5.0.1",
     # HTTP API of the question-answering service.
     "fastapi>=0.162.0",
     # Markdown header and size-based text splitting.

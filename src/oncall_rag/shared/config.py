@@ -23,11 +23,10 @@ class CommonSettings(BaseSettings):
 
     embedding_model: str = "qwen3-embedding:0.6b"
     embedding_dim: int = Field(default=1024, ge=1)
+    embedding_batch_size: int = Field(default=32, ge=1)
 
 
 class IngestSettings(CommonSettings):
-    embedding_batch_size: int = Field(default=32, ge=1)
-
     chunk_max_chars: int = Field(default=1500, ge=100)
     chunk_overlap_chars: int = Field(default=200, ge=0)
 

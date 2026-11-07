@@ -33,7 +33,7 @@ def test_invalid_settings_raise_without_input_values(
         monkeypatch.setenv(name, value)
 
     with pytest.raises(ValidationError) as error:
-        IngestSettings()  # type: ignore[call-arg]
+        IngestSettings()  # type: ignore[call-arg]  # values come from the environment
 
     message = str(error.value)
     assert expected in message
@@ -44,7 +44,7 @@ def test_invalid_settings_raise_without_input_values(
 def test_valid_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EMBEDDING_DIM", "768")
 
-    settings = IngestSettings()  # type: ignore[call-arg]
+    settings = IngestSettings()  # type: ignore[call-arg]  # values come from the environment
 
     assert settings.embedding_dim == 768
     assert settings.database_url.get_secret_value() == SECRET_URL

@@ -15,7 +15,6 @@ PLACEHOLDER_API_KEY = "ollama"
 TIMEOUT = openai.Timeout(120.0, connect=5.0)
 # The SDK retries connection errors, timeouts, 408, 409, 429 and 5xx: three attempts in total.
 MAX_RETRIES = 2
-DEFAULT_BATCH_SIZE = 32
 # Ollama's float output equals its native /api/embed vectors; the SDK default (base64) does not.
 ENCODING_FORMAT: Final = "float"
 
@@ -40,7 +39,7 @@ class OpenAICompatibleEmbedder(Embedder):
         *,
         model: str,
         dimension: int,
-        batch_size: int = DEFAULT_BATCH_SIZE,
+        batch_size: int,
     ) -> None:
         self._client = client
         self._model = model

@@ -105,9 +105,9 @@ attempts in total), and every returned vector is checked against `EMBEDDING_DIM`
 
 **Storage.** `documents` and `chunks` (with `ON DELETE CASCADE`) in PostgreSQL, with an
 HNSW index using cosine distance, which limits `EMBEDDING_DIM` to 2000 (pgvector rejects
-the index above that). The application
-creates the tables, because the vector column dimension comes from `EMBEDDING_DIM`;
-`sql/init.sql` only enables the `vector` extension. Each document records its embedding
+the index above that). The application creates the `vector` extension (once per process,
+before the connection pool registers the vector type) and, during ingestion, the tables,
+because the vector column dimension comes from `EMBEDDING_DIM`. Each document records its embedding
 model. If the stored model or dimension differs from the configuration, ingestion stops
 and asks for `--reindex`, so vectors from different models are never mixed.
 
@@ -125,7 +125,7 @@ once `GET /health` answers `200`. To run the API on the host instead, start
 `docker compose up -d db ollama ollama-init`, run ingestion (see
 [Running ingestion](#running-ingestion)), set `LLM_BASE_URL` in `.env` to the host
 address (`http://localhost:${OLLAMA_HOST_PORT}/v1` in local mode), and run
-`uv run uvicorn oncall_rag.query.main:app`.
+`uv run uvicorn oncall_rag.query.main:app --no-access-log`.
 
 ### API
 
@@ -224,7 +224,7 @@ fixed `detail`. The exception text, which may name internal hosts, is only logge
 | 502 | `{"detail": "..."}` | the language model or embedding service rejected the request (e.g. bad API key, unknown model), or its answer is unusable (empty answer, wrong vector length) |
 | 503 | `{"detail": "..."}` | the language model or embedding service is unreachable, overloaded (429) or failing (5xx), or the database is unreachable |
 | 504 | `{"detail": "..."}` | the language model or embedding service did not answer in time (`LLM_TIMEOUT_SECONDS` for the language model) |
-| 500 | `Internal Server Error` (plain text) | anything unexpected; the traceback is only in the logs |
+| 500 | `{"detail": "Internal server error", "request_id": "..."}` | anything unexpected; the traceback is only in the logs, under the same request ID |
 
 ## Running modes
 
@@ -348,8 +348,14 @@ borrows a connection for one statement or one transaction and returns it, so two
 never share a connection mid-query, and connections broken by a database restart are
 replaced before they are handed out.
 
-**Next steps.** A request ID in every log line, to follow one question through retrieval
-and generation when several run at once.
+Every request gets an ID (`asgi-correlation-id`, `query/core/middleware.py`): a valid UUID
+sent in `X-Request-ID` is reused, otherwise a new one is generated, and every response
+returns it in `X-Request-ID`. The ID is kept in a context variable, so concurrent requests
+never see each other's ID, and a logging filter adds it to every API log line, uvicorn's
+included, to follow one question through retrieval and generation when several run at
+once. One access log line per request (method, path, status, duration in ms) replaces
+uvicorn's access log, which is turned off with `--no-access-log`. A `500` body carries the
+same `request_id`, so a user can report it.
 
 ### Parallel execution
 
@@ -526,10 +532,12 @@ oncall-rag/
 │   │   ├── loaders.py          # .md/.txt reading, front matter, validation
 │   │   ├── chunker.py
 │   │   └── pipeline.py         # load -> hash -> chunk -> embed -> replace -> prune
-│   └── query/                  # `uvicorn oncall_rag.query.main:app`
+│   └── query/                  # `uvicorn oncall_rag.query.main:app --no-access-log`
 │       ├── main.py             # app factory and lifespan
-│       ├── dependencies.py     # Depends() providers: AnswerService, PassageSearch
-│       ├── wiring.py           # composition root: builds adapters, the graph, AnswerService
+│       ├── core/
+│       │   ├── middleware.py   # request ID, access log, JSON 500, API log format
+│       │   ├── dependencies.py # Depends() providers: AnswerService, PassageSearch
+│       │   └── wiring.py       # composition root: builds adapters, the graph, AnswerService
 │       ├── routers/            # POST /ask (exception -> HTTPException), GET /health
 │       ├── services/           # AnswerService: runs the graph, builds the response
 │       ├── schemas/            # request and response bodies
@@ -542,7 +550,6 @@ oncall-rag/
 │   ├── query/
 │   └── shared/
 ├── data/docs/                  # sample documents to ingest
-├── sql/init.sql                # enables the pgvector extension
 ├── scripts/e2e.sh              # end-to-end check against the Compose stack
 ├── scripts/e2e_api_checks.py   # API part of the end-to-end check
 ├── .github/workflows/ci.yml    # lint, test, build + image scan, end to end

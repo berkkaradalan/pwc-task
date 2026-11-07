@@ -3,7 +3,7 @@ import logging
 import psycopg
 from fastapi import APIRouter, HTTPException, status
 
-from oncall_rag.query.dependencies import PassageSearchDependency
+from oncall_rag.query.core.dependencies import PassageSearchDependency
 from oncall_rag.query.schemas.health import HealthResponse, HealthStatus
 
 logger = logging.getLogger(__name__)

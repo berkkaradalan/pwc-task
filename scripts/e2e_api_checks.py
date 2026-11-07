@@ -50,7 +50,7 @@ def check_follow_up_question() -> None:
         raise CheckFailedError(f"expected an answer with sources, got {body}")
     search_query = str(body["search_query"])
     if not mentions_a_topic(search_query):
-        raise CheckFailedError(f"expected the search query to name Redis, got {search_query!r}")
+        raise CheckFailedError(f"expected Redis or FLUSHALL in the search query: {search_query!r}")
     print(f"OK: follow-up searched for {search_query!r}")
 
 

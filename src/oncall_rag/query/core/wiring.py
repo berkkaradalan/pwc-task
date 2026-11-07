@@ -37,7 +37,10 @@ async def answer_service_and_search(
         ) as llm_client,
     ):
         embedder = OpenAICompatibleEmbedder(
-            embedding_client, model=settings.embedding_model, dimension=settings.embedding_dim
+            embedding_client,
+            model=settings.embedding_model,
+            dimension=settings.embedding_dim,
+            batch_size=settings.embedding_batch_size,
         )
         llm = OpenAICompatibleLLM(
             llm_client, model=settings.llm_model, max_concurrency=settings.llm_max_concurrency
