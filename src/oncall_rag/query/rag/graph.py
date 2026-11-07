@@ -7,6 +7,7 @@ from enum import StrEnum
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from oncall_rag.query.rag.fusion import reciprocal_rank_fusion
 from oncall_rag.query.rag.prompts import (
     CONDENSE_SYSTEM_PROMPT,
     NO_CONTEXT_ANSWER,
@@ -22,11 +23,16 @@ from oncall_rag.query.rag.state import (
     RagState,
     RetrievalUpdate,
 )
+from oncall_rag.shared.models import SearchCandidates
 from oncall_rag.shared.ports import Embedder, LanguageModel, PassageSearch
 
 logger = logging.getLogger(__name__)
 
 RagGraph = CompiledStateGraph[RagState, None, RagState, RagState]
+
+# Candidates per search method before fusion: deep enough that a runbook one method ranks low
+# can still be lifted into the top results by the other.
+CANDIDATES_PER_METHOD = 20
 
 
 class Node(StrEnum):
@@ -87,10 +93,19 @@ class _Nodes:
         return {"search_query": search_query}
 
     async def retrieve(self, state: RagState) -> RetrievalUpdate:
-        vector = await self.embedder.embed_query(state["search_query"])
-        found = await self.store.search(vector, self.retrieval.top_k)
-        relevant = [passage for passage in found if passage.score >= self.retrieval.min_similarity]
-        return {"passages": relevant}
+        search_query = state["search_query"]
+        vector = await self.embedder.embed_query(search_query)
+        candidates = await self.store.search(vector, search_query, CANDIDATES_PER_METHOD)
+        if not self._is_relevant(candidates):
+            return {"passages": []}
+        fused = reciprocal_rank_fusion([candidates.by_vector, candidates.by_full_text])
+        return {"passages": fused[: self.retrieval.top_k]}
+
+    def _is_relevant(self, candidates: SearchCandidates) -> bool:
+        """Only vector similarity opens the gate: full-text also matches unrelated questions."""
+        return any(
+            passage.score >= self.retrieval.min_similarity for passage in candidates.by_vector
+        )
 
     async def generate(self, state: RagState) -> AnswerUpdate:
         prompt = build_user_prompt(state["question"], state["passages"])

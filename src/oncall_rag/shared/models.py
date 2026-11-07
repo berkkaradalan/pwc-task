@@ -47,6 +47,17 @@ class Passage:
     score: float
 
 
+@dataclass(frozen=True, slots=True)
+class SearchCandidates:
+    """Chunks found for one question by each search method, best first.
+
+    A chunk found by both methods is the same `Passage` in both lists.
+    """
+
+    by_vector: list[Passage]
+    by_full_text: list[Passage]
+
+
 class ChatRole(StrEnum):
     """Roles a client may send. There is no system role, so clients cannot inject instructions."""
 

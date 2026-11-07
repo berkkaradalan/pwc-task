@@ -53,10 +53,10 @@ run otherwise) and recommended after changing the chunk settings. A different em
 model (for example after switching `RUN_MODE`) needs no flag: ingestion rebuilds the index
 by itself, see [Storage](#ingestion-design).
 
-An index whose `documents` table still has the `embedding_model` column (created by an
-earlier version, before it was named `embedding_identity`) must be rebuilt once with
-`--reindex`. Until then, ingestion exits with `1` and the API does not start, both with the
-database error `column "embedding_identity" does not exist`.
+An index created by an earlier version must be rebuilt once with `--reindex` when its
+schema lacks a column: `documents.embedding_identity` (formerly `embedding_model`) or
+`chunks.text_search` (full-text search). Until then, ingestion exits with `1` with the
+database error `column "..." does not exist`, so Compose does not start the API either.
 
 The command exits with `0` on success, `1` on fatal errors (database or embedding service
 unreachable, documents folder missing, index incompatible with the configuration, an
@@ -132,6 +132,9 @@ model, plus the provider when one is pinned (for example
 never mixed. If the stored value differs from the configured one, ingestion logs one warning
 naming both and rebuilds the index; with the same value nothing is rebuilt. If the stored dimension differs from
 `EMBEDDING_DIM`, ingestion stops and asks for `--reindex`.
+
+For full-text search, `chunks` has a generated `text_search` column (`to_tsvector('english',
+text)`) with a GIN index, created with the tables.
 
 ## Running the API
 
@@ -364,10 +367,19 @@ generate | no_context -> END` (`query/rag/graph.py`). All per-request data lives
 state of that invocation. A conditional edge from the start goes straight to `retrieve`
 when there is no history, and to `condense_question` otherwise (see Conversation history).
 `retrieve` embeds the search query (the question itself when there is no history) with
-the query instruction of the embedding model, and asks pgvector for the `RETRIEVAL_TOP_K`
-closest chunks; passages with a cosine similarity below `RETRIEVAL_MIN_SIMILARITY` are
-dropped. With no passage left, `no_context` returns a fixed answer and the language model
-is not called. Otherwise `generate` sends the numbered passages and the question with a
+the query instruction of the embedding model and runs one SQL query for two candidate
+lists of 20 chunks each: the chunks closest to that vector, and the chunks whose text best
+matches the query's words (PostgreSQL full-text search with English stemming, any of the
+words, ranked by `ts_rank`). The two lists are merged with Reciprocal Rank Fusion
+(`query/rag/fusion.py`, k = 60: each chunk scores the sum of 1 / (60 + its rank) over the
+lists that contain it), and the first `RETRIEVAL_TOP_K` are kept. Full text finds runbooks
+that describe a symptom in the question's own words ("charged twice", "logged out") when
+the vector ranks them too low. Only the vector list decides whether anything is relevant:
+if none of its chunks reaches a cosine similarity of `RETRIEVAL_MIN_SIMILARITY`,
+`no_context` returns a fixed answer and the language model is not called, because full
+text also matches common words of unrelated questions. Once that gate is open, every
+fused passage is kept, including full-text matches with a lower similarity; each source
+still shows its cosine similarity as `score`. Otherwise `generate` sends the numbered passages and the question with a
 system prompt (`query/rag/prompts.py`, temperature 0.1, the same for both modes). It asks for plain prose (a numbered list only
 for procedures), every fact from the passages that answers the question, commands
 generalized with a placeholder such as `<service>` when they come from another service's
@@ -398,10 +410,14 @@ failures map to the same HTTP statuses.
 sample documents, and applies in both modes. With the local embedding model, the top
 similarity of five answerable questions was 0.64 to 0.81, and of five unrelated questions
 0.20 to 0.41 (the highest being an IT question the documents do not cover, about single
-sign-on for an HR portal). With the cloud embedding model, twelve answerable questions
-scored 0.61 to 0.91 and two unrelated ones 0.27 and 0.37. A question about a component the
-documents only mention (`rabbitmq-0` going down) scored 0.59, passed, and was answered as
-not covered. Re-check the threshold after changing the documents or an embedding model.
+sign-on for an HR portal). With the cloud embedding model (pinned to DeepInfra), fifteen
+answerable questions, including symptom and Turkish questions, scored 0.56 to 0.91, and four
+unrelated ones 0.21 to 0.45 (the highest being TLS certificate renewal for api-gateway, a
+service the documents name). The local range was measured on fewer questions and has not
+been re-measured since. A question about a component the documents only mention
+(`rabbitmq-0` going down) scored 0.58, passed, and was answered as not covered. The gate uses
+only these vector scores; full-text matches never open it. Re-check the threshold after
+changing the documents or an embedding model.
 
 **Startup.** The service refuses to start if the index has not been built yet (run
 ingestion first; only ingestion creates the schema) or was built with another embedding
@@ -531,11 +547,14 @@ retrieval (one embedding call and one indexed query) takes well under a second.
   `<service>`, and answers broad questions with long lists. The cloud model gave the first
   two of these answers the same way (see [Cloud vs local](#cloud-vs-local)).
 - Local answers take about 30-50 s on CPU, and longer after a model was unloaded.
-- Retrieval is semantic only. A question that describes a symptom in other words than the
-  runbook ("merchants keep getting logged out" for Redis evictions) may not retrieve that
-  runbook. The answer then usually says the documentation does not cover it, but it can
-  also answer from the wrong runbook: in cloud mode, a payment still "pending" after a
-  reload (replica lag) was blamed on a card processor outage.
+- Full-text search lifts runbooks that share the question's words, but a symptom phrased
+  differently from the runbook can still miss the top `RETRIEVAL_TOP_K`. In cloud mode, a
+  payment still "pending" after a reload (replica lag) ranks fifth after fusion, and the
+  answer blamed a card processor outage. The answer usually says the documentation does
+  not cover a question it cannot find, but it can also answer from the wrong runbook.
+- Full-text search uses English stemming, so it does not help non-English questions: the
+  same "pending" question in Turkish matches no chunk by text and relies on vector search
+  alone.
 - A follow-up question costs one extra language model call to condense it. The rewrite is
   a single short question, so on CPU it added about 2 s to a 42 s answer in one measured
   follow-up, not a second full answer.
@@ -627,7 +646,7 @@ oncall-rag/
 │       ├── routers/            # POST /ask (exception -> HTTPException), GET /health
 │       ├── services/           # AnswerService: runs the graph, builds the response
 │       ├── schemas/            # request and response bodies
-│       └── rag/                # graph state, prompts, [condense ->] retrieve -> generate
+│       └── rag/                # graph state, prompts, rank fusion, [condense ->] retrieve -> generate
 ├── tests/
 │   ├── fakes.py                # FakeEmbedder, InMemoryVectorStore, FakeLanguageModel
 │   ├── fixtures/docs/          # small test documents

@@ -56,7 +56,7 @@ def passage(source: str, score: float) -> Passage:
 def test_answered_question_returns_answer_and_sources(
     client: TestClient, store: InMemoryVectorStore, llm: FakeLanguageModel
 ) -> None:
-    store.search_results = [passage("backlog.md", 0.82), passage("other.md", 0.1)]
+    store.vector_results = [passage("backlog.md", 0.82)]
 
     response = client.post("/ask", json={"question": "  How do I drain the backlog?  "})
 
@@ -78,7 +78,7 @@ def test_answered_question_returns_answer_and_sources(
 def test_scores_are_rounded_to_three_decimals(
     client: TestClient, store: InMemoryVectorStore
 ) -> None:
-    store.search_results = [passage("backlog.md", 0.8112061923951416)]
+    store.vector_results = [passage("backlog.md", 0.8112061923951416)]
 
     response = client.post("/ask", json={"question": "How do I drain the backlog?"})
 
@@ -89,7 +89,7 @@ def test_scores_are_rounded_to_three_decimals(
 def test_no_relevant_passages_returns_fixed_answer_without_calling_the_llm(
     client: TestClient, store: InMemoryVectorStore, llm: FakeLanguageModel
 ) -> None:
-    store.search_results = [passage("backlog.md", 0.2)]
+    store.vector_results = [passage("backlog.md", 0.2)]
 
     response = client.post("/ask", json={"question": "What is the capital of France?"})
 
@@ -132,7 +132,7 @@ def test_question_without_history_is_searched_as_asked(
     store: InMemoryVectorStore,
     llm: FakeLanguageModel,
 ) -> None:
-    store.search_results = [passage("backlog.md", 0.9)]
+    store.vector_results = [passage("backlog.md", 0.9)]
 
     response = client.post("/ask", json={"question": "How do I drain the backlog?"})
 
@@ -148,7 +148,7 @@ def test_follow_up_is_condensed_before_search_and_answered_with_the_history(
     store: InMemoryVectorStore,
     llm: FakeLanguageModel,
 ) -> None:
-    store.search_results = [passage("redis.md", 0.9)]
+    store.vector_results = [passage("redis.md", 0.9)]
     llm.answers = [CONDENSED_QUESTION, "It deletes every key."]
 
     response = client.post("/ask", json={"question": "Why not?", "history": HISTORY})
@@ -197,7 +197,7 @@ def test_invalid_history_is_rejected_with_the_error_body(
 def test_condensation_timeout_maps_to_gateway_timeout(
     client: TestClient, store: InMemoryVectorStore, llm: FakeLanguageModel
 ) -> None:
-    store.search_results = [passage("redis.md", 0.9)]
+    store.vector_results = [passage("redis.md", 0.9)]
     llm.error = openai.APITimeoutError(request=LLM_REQUEST)
 
     response = client.post("/ask", json={"question": "Why not?", "history": HISTORY})
@@ -222,7 +222,7 @@ def test_llm_failures_map_to_gateway_errors(
     error: Exception,
     status_code: int,
 ) -> None:
-    store.search_results = [passage("backlog.md", 0.9)]
+    store.vector_results = [passage("backlog.md", 0.9)]
     llm.error = error
 
     response = client.post("/ask", json={"question": "How do I drain the backlog?"})

@@ -15,11 +15,14 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from oncall_rag.shared.errors import ReindexRequiredError
-from oncall_rag.shared.models import Chunk, Document, Passage
+from oncall_rag.shared.models import Chunk, Document, Passage, SearchCandidates
 from oncall_rag.shared.ports import DocumentIndex, PassageSearch
 
 # Also the longest wait for a free pooled connection.
 CONNECT_TIMEOUT_SECONDS = 10
+
+# Stemming and stop words for full-text search. English only: other languages match nothing.
+TEXT_SEARCH_CONFIG = "english"
 
 _CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
 
@@ -41,10 +44,12 @@ CREATE TABLE IF NOT EXISTS chunks (
     text         text NOT NULL,
     metadata     jsonb NOT NULL DEFAULT '{{}}'::jsonb,
     embedding    vector({dimension}) NOT NULL,
+    text_search  tsvector GENERATED ALWAYS AS (to_tsvector({text_search_config}, text)) STORED,
     UNIQUE (document_id, chunk_index)
 );
 CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx
     ON chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS chunks_text_search_gin_idx ON chunks USING gin (text_search);
 """
 
 _DROP_SCHEMA = "DROP TABLE IF EXISTS chunks, documents"
@@ -72,13 +77,46 @@ INSERT INTO chunks (document_id, chunk_index, heading_path, text, metadata, embe
 VALUES (%s, %s, %s, %s, %s, %s)
 """
 
-# `<=>` is cosine distance; ordering by it lets the HNSW index serve the query.
+# Both candidate lists in one round trip, vector hits first, each in rank order.
+# `<=>` is cosine distance; ordering by it lets the HNSW index serve the query, which returns at
+# most hnsw.ef_search rows (default 40), so `limit` must stay below that.
+# plainto_tsquery joins the words with AND; OR lets a chunk that shares only some of the
+# question's words match. ts_rank normalization 1 keeps long chunks from winning on length alone.
 _SEARCH = """
-SELECT d.source, d.title, c.heading_path, c.text, 1 - (c.embedding <=> %(vector)s) AS score
-FROM chunks c
+WITH nearest AS (
+    SELECT id, row_number() OVER (ORDER BY distance, id) AS rank
+    FROM (
+        SELECT id, embedding <=> %(vector)s AS distance
+        FROM chunks
+        ORDER BY distance
+        LIMIT %(limit)s
+    ) AS by_distance
+),
+text_query AS (
+    SELECT replace(plainto_tsquery(%(config)s::regconfig, %(text)s)::text, '&', '|')::tsquery
+        AS query
+),
+matching AS (
+    SELECT id, row_number() OVER (ORDER BY text_rank DESC, id) AS rank
+    FROM (
+        SELECT c.id, ts_rank(c.text_search, q.query, 1) AS text_rank
+        FROM chunks c, text_query q
+        WHERE c.text_search @@ q.query
+        ORDER BY text_rank DESC, c.id
+        LIMIT %(limit)s
+    ) AS by_text_rank
+),
+hits AS (
+    SELECT true AS from_vector, id, rank FROM nearest
+    UNION ALL
+    SELECT false, id, rank FROM matching
+)
+SELECT h.from_vector, d.source, d.title, c.heading_path, c.text,
+       1 - (c.embedding <=> %(vector)s) AS score
+FROM hits h
+JOIN chunks c ON c.id = h.id
 JOIN documents d ON d.id = c.document_id
-ORDER BY c.embedding <=> %(vector)s
-LIMIT %(top_k)s
+ORDER BY h.from_vector DESC, h.rank
 """
 
 Connection = psycopg.AsyncConnection
@@ -131,16 +169,26 @@ class PgVectorStore(DocumentIndex, PassageSearch):
         async with self._pool.connection() as connection:
             await connection.execute("SELECT 1")
 
-    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
+    async def search(self, vector: Sequence[float], text: str, limit: int) -> SearchCandidates:
+        parameters = {
+            "vector": Vector(list(vector)),
+            "text": text,
+            "limit": limit,
+            "config": TEXT_SEARCH_CONFIG,
+        }
         async with self._pool.connection() as connection:
-            cursor = await connection.execute(
-                _SEARCH, {"vector": Vector(list(vector)), "top_k": top_k}
-            )
+            cursor = await connection.execute(_SEARCH, parameters)
             rows = await cursor.fetchall()
-        return [
-            Passage(source=source, title=title, heading_path=heading, text=text, score=score)
-            for source, title, heading, text, score in rows
-        ]
+        candidates = SearchCandidates(by_vector=[], by_full_text=[])
+        for from_vector, source, title, heading, chunk_text, score in rows:
+            passage = Passage(
+                source=source, title=title, heading_path=heading, text=chunk_text, score=score
+            )
+            if from_vector:
+                candidates.by_vector.append(passage)
+            else:
+                candidates.by_full_text.append(passage)
+        return candidates
 
     async def list_sources(self) -> set[str]:
         async with self._pool.connection() as connection:
@@ -246,5 +294,8 @@ class PgVectorStore(DocumentIndex, PassageSearch):
         return int(row[0]) if row else None
 
     async def _create_schema(self, connection: Connection) -> None:
-        statement = sql.SQL(_CREATE_SCHEMA).format(dimension=sql.Literal(self._dimension))
+        statement = sql.SQL(_CREATE_SCHEMA).format(
+            dimension=sql.Literal(self._dimension),
+            text_search_config=sql.Literal(TEXT_SEARCH_CONFIG),
+        )
         await connection.execute(statement)

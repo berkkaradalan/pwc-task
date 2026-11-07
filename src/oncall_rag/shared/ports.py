@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Collection, Sequence
 
-from oncall_rag.shared.models import ChatMessage, Chunk, Document, Passage
+from oncall_rag.shared.models import ChatMessage, Chunk, Document, SearchCandidates
 
 
 class Embedder(ABC):
@@ -76,8 +76,8 @@ class PassageSearch(ABC):
         """Raise ReindexRequiredError unless the index exists with this identity and dimension."""
 
     @abstractmethod
-    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
-        """The `top_k` chunks closest to `vector`, most similar first."""
+    async def search(self, vector: Sequence[float], text: str, limit: int) -> SearchCandidates:
+        """Up to `limit` chunks closest to `vector` and up to `limit` whose words match `text`."""
 
     @abstractmethod
     async def ping(self) -> None:

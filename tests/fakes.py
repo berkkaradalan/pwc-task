@@ -10,7 +10,7 @@ import openai
 import psycopg
 
 from oncall_rag.shared.errors import ReindexRequiredError
-from oncall_rag.shared.models import ChatMessage, Chunk, Document, Passage
+from oncall_rag.shared.models import ChatMessage, Chunk, Document, Passage, SearchCandidates
 from oncall_rag.shared.ports import DocumentIndex, Embedder, LanguageModel, PassageSearch
 
 FAKE_DIMENSION = 8
@@ -94,14 +94,16 @@ class StoredDocument:
 
 
 class InMemoryVectorStore(DocumentIndex, PassageSearch):
-    """Stores documents in a dict. `search` returns the canned `search_results`."""
+    """Stores documents in a dict. `search` returns the canned `vector_results` and
+    `full_text_results`."""
 
     def __init__(self) -> None:
         self.documents: dict[str, StoredDocument] = {}
         self.initialize_calls = 0
         self.reset_calls = 0
-        self.search_results: list[Passage] = []
-        self.search_calls: list[tuple[list[float], int]] = []
+        self.vector_results: list[Passage] = []
+        self.full_text_results: list[Passage] = []
+        self.search_calls: list[tuple[list[float], str, int]] = []
         self.is_down = False
 
     async def initialize(self) -> None:
@@ -115,9 +117,11 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
         if self.is_down:
             raise psycopg.OperationalError("connection to server at db.internal failed")
 
-    async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:
-        self.search_calls.append((list(vector), top_k))
-        return self.search_results[:top_k]
+    async def search(self, vector: Sequence[float], text: str, limit: int) -> SearchCandidates:
+        self.search_calls.append((list(vector), text, limit))
+        return SearchCandidates(
+            by_vector=self.vector_results[:limit], by_full_text=self.full_text_results[:limit]
+        )
 
     async def list_sources(self) -> set[str]:
         return set(self.documents)
