@@ -2,7 +2,7 @@
 
 
 class ReindexRequiredError(Exception):
-    """Raised when the index was built with another embedding model or vector dimension."""
+    """Raised when the index was built with another embedding identity or vector dimension."""
 
 
 class ProviderResponseError(Exception):

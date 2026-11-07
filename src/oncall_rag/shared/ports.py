@@ -11,10 +11,10 @@ class Embedder(ABC):
 
     @property
     @abstractmethod
-    def model_name(self) -> str:
-        """Identifier stored with every vector so different models are never mixed.
+    def embedding_identity(self) -> str:
+        """The model, plus the provider when one is pinned (`model@provider`).
 
-        Includes the provider when one is pinned: providers may serve different weights.
+        Stored with every vector, so vectors from different weights are never mixed.
         """
 
     @abstractmethod
@@ -38,16 +38,16 @@ class DocumentIndex(ABC):
         """Drop all indexed data and recreate the schema from the current configuration."""
 
     @abstractmethod
-    async def ensure_compatible(self, embedding_model: str) -> None:
-        """Raise ReindexRequiredError unless the index exists with this model and dimension."""
+    async def ensure_compatible(self, embedding_identity: str) -> None:
+        """Raise ReindexRequiredError unless the index exists with this identity and dimension."""
 
     @abstractmethod
     async def list_sources(self) -> set[str]:
         """Sources of all indexed documents."""
 
     @abstractmethod
-    async def list_embedding_models(self) -> set[str]:
-        """Embedding models of all indexed documents."""
+    async def list_embedding_identities(self) -> set[str]:
+        """Embedding identities of all indexed documents."""
 
     @abstractmethod
     async def get_content_hash(self, source: str) -> str | None:
@@ -59,7 +59,7 @@ class DocumentIndex(ABC):
         document: Document,
         chunks: Sequence[Chunk],
         embeddings: Sequence[Sequence[float]],
-        embedding_model: str,
+        embedding_identity: str,
     ) -> None:
         """Atomically upsert the document and replace all of its chunks."""
 
@@ -72,8 +72,8 @@ class PassageSearch(ABC):
     """Implemented by PgVectorStore; InMemoryVectorStore in tests."""
 
     @abstractmethod
-    async def ensure_compatible(self, embedding_model: str) -> None:
-        """Raise ReindexRequiredError unless the index exists with this model and dimension."""
+    async def ensure_compatible(self, embedding_identity: str) -> None:
+        """Raise ReindexRequiredError unless the index exists with this identity and dimension."""
 
     @abstractmethod
     async def search(self, vector: Sequence[float], top_k: int) -> list[Passage]:

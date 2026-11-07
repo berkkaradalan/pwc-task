@@ -56,6 +56,6 @@ async def answer_service_and_search(
         retrieval = RetrievalConfig(
             top_k=settings.retrieval_top_k, min_similarity=settings.retrieval_min_similarity
         )
-        await store.ensure_compatible(embedder.model_name)
+        await store.ensure_compatible(embedder.embedding_identity)
         graph = build_graph(embedder, store, llm, retrieval)
         yield AnswerService(graph), store

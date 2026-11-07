@@ -53,6 +53,11 @@ run otherwise) and recommended after changing the chunk settings. A different em
 model (for example after switching `RUN_MODE`) needs no flag: ingestion rebuilds the index
 by itself, see [Storage](#ingestion-design).
 
+An index whose `documents` table still has the `embedding_model` column (created by an
+earlier version, before it was named `embedding_identity`) must be rebuilt once with
+`--reindex`. Until then, ingestion exits with `1` and the API does not start, both with the
+database error `column "embedding_identity" does not exist`.
+
 The command exits with `0` on success, `1` on fatal errors (database or embedding service
 unreachable, documents folder missing, index incompatible with the configuration, an
 embedding with the wrong length) and `2` on invalid configuration. Invalid settings are
@@ -119,7 +124,7 @@ attempts in total), and every returned vector is checked against `EMBEDDING_DIM`
 HNSW index using cosine distance, which limits `EMBEDDING_DIM` to 2000 (pgvector rejects
 the index above that). The application creates the `vector` extension (once per process,
 before the connection pool registers the vector type) and, during ingestion, the tables,
-because the vector column dimension comes from `EMBEDDING_DIM`. Each document records its embedding
+because the vector column dimension comes from `EMBEDDING_DIM`. Each document records its embedding identity: the
 model, plus the provider when one is pinned (for example
 `qwen/qwen3-embedding-8b@deepinfra`), so vectors from different models or providers are
 never mixed. If the stored value differs from the configured one, ingestion logs one warning

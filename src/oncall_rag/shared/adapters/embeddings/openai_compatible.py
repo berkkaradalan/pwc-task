@@ -48,7 +48,7 @@ class OpenAICompatibleEmbedder(Embedder):
         self._batch_size = batch_size
 
     @property
-    def model_name(self) -> str:
+    def embedding_identity(self) -> str:
         if self._provider is None:
             return self._model
         return f"{self._model}{PROVIDER_SEPARATOR}{self._provider}"

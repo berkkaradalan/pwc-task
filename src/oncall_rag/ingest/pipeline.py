@@ -56,18 +56,18 @@ class IngestionPipeline:
             await self._store.reset()
         else:
             await self._store.initialize()
-            await self._rebuild_if_model_changed()
-        await self._store.ensure_compatible(self._embedder.model_name)
+            await self._rebuild_if_identity_changed()
+        await self._store.ensure_compatible(self._embedder.embedding_identity)
 
-    async def _rebuild_if_model_changed(self) -> None:
-        """Vectors from different models are not comparable, so every document is embedded again."""
-        model = self._embedder.model_name
-        previous_models = await self._store.list_embedding_models() - {model}
-        if not previous_models:
+    async def _rebuild_if_identity_changed(self) -> None:
+        """Vectors from other weights are not comparable, so every document is embedded again."""
+        identity = self._embedder.embedding_identity
+        previous_identities = await self._store.list_embedding_identities() - {identity}
+        if not previous_identities:
             return
-        previous = ", ".join(sorted(previous_models))
+        previous = ", ".join(sorted(previous_identities))
         logger.warning(
-            "Embedding model changed from %s to %s: rebuilding the index", previous, model
+            "Embedding identity changed from %s to %s: rebuilding the index", previous, identity
         )
         await self._store.reset()
 
@@ -92,5 +92,7 @@ class IngestionPipeline:
         chunks = chunk_document(document, self._chunking)
         texts = [build_embedding_text(document.title, chunk) for chunk in chunks]
         embeddings = await self._embedder.embed_documents(texts)
-        await self._store.replace_document(document, chunks, embeddings, self._embedder.model_name)
+        await self._store.replace_document(
+            document, chunks, embeddings, self._embedder.embedding_identity
+        )
         logger.info("Indexed %s (%d chunks)", document.source, len(chunks))

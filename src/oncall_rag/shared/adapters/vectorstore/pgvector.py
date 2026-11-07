@@ -25,13 +25,13 @@ _CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
 
 _CREATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
-    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    source          text NOT NULL UNIQUE,
-    title           text NOT NULL,
-    content_hash    text NOT NULL,
-    metadata        jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-    embedding_model text NOT NULL,
-    indexed_at      timestamptz NOT NULL DEFAULT now()
+    id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source             text NOT NULL UNIQUE,
+    title              text NOT NULL,
+    content_hash       text NOT NULL,
+    metadata           jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+    embedding_identity text NOT NULL,
+    indexed_at         timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS chunks (
     id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -56,13 +56,13 @@ WHERE attrelid = to_regclass('chunks') AND attname = 'embedding' AND NOT attisdr
 """
 
 _UPSERT_DOCUMENT = """
-INSERT INTO documents (source, title, content_hash, metadata, embedding_model, indexed_at)
-VALUES (%(source)s, %(title)s, %(content_hash)s, %(metadata)s, %(embedding_model)s, now())
+INSERT INTO documents (source, title, content_hash, metadata, embedding_identity, indexed_at)
+VALUES (%(source)s, %(title)s, %(content_hash)s, %(metadata)s, %(embedding_identity)s, now())
 ON CONFLICT (source) DO UPDATE SET
     title = EXCLUDED.title,
     content_hash = EXCLUDED.content_hash,
     metadata = EXCLUDED.metadata,
-    embedding_model = EXCLUDED.embedding_model,
+    embedding_identity = EXCLUDED.embedding_identity,
     indexed_at = EXCLUDED.indexed_at
 RETURNING id
 """
@@ -147,20 +147,20 @@ class PgVectorStore(DocumentIndex, PassageSearch):
             cursor = await connection.execute("SELECT source FROM documents")
             return {row[0] for row in await cursor.fetchall()}
 
-    async def list_embedding_models(self) -> set[str]:
+    async def list_embedding_identities(self) -> set[str]:
         async with self._pool.connection() as connection:
-            cursor = await connection.execute("SELECT DISTINCT embedding_model FROM documents")
+            cursor = await connection.execute("SELECT DISTINCT embedding_identity FROM documents")
             return {row[0] for row in await cursor.fetchall()}
 
-    async def ensure_compatible(self, embedding_model: str) -> None:
+    async def ensure_compatible(self, embedding_identity: str) -> None:
         async with self._pool.connection() as connection:
             self._check_dimension(await self._stored_dimension(connection))
-        foreign = await self.list_embedding_models() - {embedding_model}
+        foreign = await self.list_embedding_identities() - {embedding_identity}
         if foreign:
             stored = ", ".join(sorted(foreign))
             raise ReindexRequiredError(
-                f"The index contains vectors from embedding model(s) [{stored}], "
-                f"but the configured embedding model is '{embedding_model}'."
+                f"The index contains vectors from embedding identity [{stored}], "
+                f"but the configured embedding identity is '{embedding_identity}'."
             )
 
     async def get_content_hash(self, source: str) -> str | None:
@@ -176,10 +176,10 @@ class PgVectorStore(DocumentIndex, PassageSearch):
         document: Document,
         chunks: Sequence[Chunk],
         embeddings: Sequence[Sequence[float]],
-        embedding_model: str,
+        embedding_identity: str,
     ) -> None:
         async with self._pool.connection() as connection, connection.transaction():
-            document_id = await self._upsert_document(connection, document, embedding_model)
+            document_id = await self._upsert_document(connection, document, embedding_identity)
             await connection.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
             await self._insert_chunks(connection, document_id, chunks, embeddings)
 
@@ -190,7 +190,7 @@ class PgVectorStore(DocumentIndex, PassageSearch):
             )
 
     async def _upsert_document(
-        self, connection: Connection, document: Document, embedding_model: str
+        self, connection: Connection, document: Document, embedding_identity: str
     ) -> int:
         cursor = await connection.execute(
             _UPSERT_DOCUMENT,
@@ -199,7 +199,7 @@ class PgVectorStore(DocumentIndex, PassageSearch):
                 "title": document.title,
                 "content_hash": document.content_hash,
                 "metadata": Jsonb(dict(document.metadata)),
-                "embedding_model": embedding_model,
+                "embedding_identity": embedding_identity,
             },
         )
         row = await cursor.fetchone()

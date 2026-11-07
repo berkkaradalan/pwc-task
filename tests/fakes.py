@@ -20,14 +20,14 @@ FAKE_EMBEDDINGS_API_URL = "http://embeddings.test/v1"
 class FakeEmbedder(Embedder):
     """Deterministic vectors derived from a hash of the text. Records document and query calls."""
 
-    def __init__(self, model_name: str = "fake-embedding-model") -> None:
-        self._model_name = model_name
+    def __init__(self, embedding_identity: str = "fake-embedding-model") -> None:
+        self._embedding_identity = embedding_identity
         self.document_calls: list[list[str]] = []
         self.queries: list[str] = []
 
     @property
-    def model_name(self) -> str:
-        return self._model_name
+    def embedding_identity(self) -> str:
+        return self._embedding_identity
 
     @property
     def embedded_texts(self) -> list[str]:
@@ -84,7 +84,7 @@ class StoredDocument:
     document: Document
     chunks: list[Chunk]
     embeddings: list[list[float]]
-    embedding_model: str
+    embedding_identity: str
 
 
 class InMemoryVectorStore(DocumentIndex, PassageSearch):
@@ -116,14 +116,16 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
     async def list_sources(self) -> set[str]:
         return set(self.documents)
 
-    async def list_embedding_models(self) -> set[str]:
-        return {stored.embedding_model for stored in self.documents.values()}
+    async def list_embedding_identities(self) -> set[str]:
+        return {stored.embedding_identity for stored in self.documents.values()}
 
-    async def ensure_compatible(self, embedding_model: str) -> None:
-        foreign = await self.list_embedding_models() - {embedding_model}
+    async def ensure_compatible(self, embedding_identity: str) -> None:
+        foreign = await self.list_embedding_identities() - {embedding_identity}
         if foreign:
             stored = ", ".join(sorted(foreign))
-            raise ReindexRequiredError(f"Index models [{stored}], configured {embedding_model}")
+            raise ReindexRequiredError(
+                f"Index identities [{stored}], configured {embedding_identity}"
+            )
 
     async def get_content_hash(self, source: str) -> str | None:
         stored = self.documents.get(source)
@@ -134,13 +136,13 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
         document: Document,
         chunks: Sequence[Chunk],
         embeddings: Sequence[Sequence[float]],
-        embedding_model: str,
+        embedding_identity: str,
     ) -> None:
         self.documents[document.source] = StoredDocument(
             document=document,
             chunks=list(chunks),
             embeddings=[list(vector) for vector in embeddings],
-            embedding_model=embedding_model,
+            embedding_identity=embedding_identity,
         )
 
     async def delete_documents(self, sources: Collection[str]) -> None:

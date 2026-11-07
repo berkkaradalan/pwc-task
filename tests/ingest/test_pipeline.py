@@ -53,7 +53,7 @@ async def test_first_run_indexes_all_valid_documents(
     assert store.initialize_calls == 1
 
     stored = store.documents["payments-outage.md"]
-    assert stored.embedding_model == embedder.model_name
+    assert stored.embedding_identity == embedder.embedding_identity
     assert len(stored.chunks) == len(stored.embeddings) > 1
     # The embedder gets context-prefixed text; the store keeps the raw chunk text.
     rollback = next(c for c in stored.chunks if c.heading_path.endswith("Rollback"))
@@ -124,16 +124,16 @@ async def test_previously_indexed_file_that_becomes_invalid_is_pruned(
 async def test_embedding_model_change_rebuilds_the_index_with_one_warning(
     docs_dir: Path, store: InMemoryVectorStore, caplog: pytest.LogCaptureFixture
 ) -> None:
-    first = make_pipeline(FakeEmbedder(model_name="old-model"), store)
+    first = make_pipeline(FakeEmbedder(embedding_identity="old-model"), store)
     await first.run(docs_dir)
 
-    second = make_pipeline(FakeEmbedder(model_name="new-model"), store)
+    second = make_pipeline(FakeEmbedder(embedding_identity="new-model"), store)
     with caplog.at_level(logging.WARNING, logger=PIPELINE_LOGGER):
         report = await second.run(docs_dir)
 
     assert store.reset_calls == 1
     assert report.indexed == VALID_SOURCES
-    assert await store.list_embedding_models() == {"new-model"}
+    assert await store.list_embedding_identities() == {"new-model"}
     [warning] = [record for record in caplog.records if record.name == PIPELINE_LOGGER]
     assert "old-model" in warning.getMessage()
     assert "new-model" in warning.getMessage()
@@ -156,7 +156,7 @@ async def test_embedding_provider_change_rebuilds_the_index(
 
     assert store.reset_calls == 1
     assert report.indexed == VALID_SOURCES
-    assert await store.list_embedding_models() == {"qwen/qwen3-embedding-8b@deepinfra"}
+    assert await store.list_embedding_identities() == {"qwen/qwen3-embedding-8b@deepinfra"}
 
 
 async def test_same_embedding_model_does_not_rebuild(
@@ -173,15 +173,15 @@ async def test_same_embedding_model_does_not_rebuild(
 async def test_reindex_rebuilds_with_the_new_model(
     docs_dir: Path, store: InMemoryVectorStore
 ) -> None:
-    first = make_pipeline(FakeEmbedder(model_name="old-model"), store)
+    first = make_pipeline(FakeEmbedder(embedding_identity="old-model"), store)
     await first.run(docs_dir)
 
-    second = make_pipeline(FakeEmbedder(model_name="new-model"), store)
+    second = make_pipeline(FakeEmbedder(embedding_identity="new-model"), store)
     report = await second.run(docs_dir, reindex=True)
 
     assert store.reset_calls == 1
     assert report.indexed == VALID_SOURCES
-    assert await store.list_embedding_models() == {"new-model"}
+    assert await store.list_embedding_identities() == {"new-model"}
 
 
 async def test_missing_docs_folder_fails_without_touching_the_index(
