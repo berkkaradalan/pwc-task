@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 
 import httpx2
@@ -28,11 +29,18 @@ HISTORY = [
     {"role": "assistant", "content": FIRST_ANSWER},
 ]
 LLM_REQUEST = httpx2.Request("POST", "http://llm.internal/v1/chat/completions")
+ASK_LOGGER = "oncall_rag.query.routers.ask"
 
 
 def status_error(error_type: type[openai.APIStatusError], status_code: int) -> Exception:
     response = httpx2.Response(status_code, request=LLM_REQUEST)
     return error_type("error from llm.internal", response=response, body=None)
+
+
+def with_note(error: Exception, note: str) -> Exception:
+    """The error as an adapter lets it propagate: unchanged, with a note naming the call."""
+    error.add_note(note)
+    return error
 
 
 def passage(source: str, score: float) -> Passage:
@@ -248,6 +256,34 @@ def test_service_failures_map_to_http_errors_without_internal_details(
     detail = response.json()["detail"]
     assert "llm.internal" not in detail
     assert "db.internal" not in detail
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(
+            with_note(status_error(openai.NotFoundError, 404), "embedding call to model@provider"),
+            "embedding call to model@provider: error from llm.internal",
+            id="noted-by-adapter",
+        ),
+        pytest.param(
+            psycopg.OperationalError("db.internal down"), "db.internal down", id="without-note"
+        ),
+    ],
+)
+def test_failure_warning_names_the_failed_call(
+    failing_client: Callable[[Exception], TestClient],
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+    expected: str,
+) -> None:
+    client = failing_client(error)
+
+    with caplog.at_level(logging.WARNING, logger=ASK_LOGGER):
+        client.post("/ask", json={"question": "How do I drain the backlog?"})
+
+    [record] = [record for record in caplog.records if record.name == ASK_LOGGER]
+    assert record.getMessage() == f"Answering failed: {expected}"
 
 
 def test_unexpected_error_returns_a_generic_500(

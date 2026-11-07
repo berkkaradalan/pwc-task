@@ -1,3 +1,4 @@
+import openai
 import pytest
 
 from oncall_rag.shared.adapters.embeddings.openai_compatible import OpenAICompatibleEmbedder
@@ -70,3 +71,21 @@ async def test_without_a_provider_no_routing_field_is_sent() -> None:
     await make_embedder(handler).embed_query("how do I roll back?")
 
     assert "provider" not in handler.payloads[0]
+
+
+@pytest.mark.parametrize(
+    ("handler", "error_type"),
+    [
+        pytest.param(FakeEmbeddingsApi(DIMENSION, status_code=404), openai.NotFoundError, id="sdk"),
+        pytest.param(FakeEmbeddingsApi(DIMENSION + 1), ProviderResponseError, id="unusable"),
+    ],
+)
+async def test_errors_propagate_unchanged_with_a_note_naming_the_call(
+    handler: FakeEmbeddingsApi, error_type: type[Exception]
+) -> None:
+    embedder = make_embedder(handler, model="qwen/qwen3-embedding-8b", provider="deepinfra")
+
+    with pytest.raises(error_type) as error:
+        await embedder.embed_query("how do I roll back?")
+
+    assert error.value.__notes__ == ["embedding call to qwen/qwen3-embedding-8b@deepinfra"]

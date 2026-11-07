@@ -98,6 +98,19 @@ def test_ingestion_error_exits_with_1(
     assert f"Ingestion failed: {error}" in caplog.text
 
 
+def test_ingestion_error_log_names_the_failed_call(
+    run_ingestion: FakeRunIngestion, caplog: pytest.LogCaptureFixture
+) -> None:
+    error = openai.APIConnectionError(request=EMBEDDING_REQUEST)
+    error.add_note("embedding call to model@provider")
+    run_ingestion.error = error
+
+    with caplog.at_level(logging.ERROR):
+        assert ingest_main.main([]) == ExitCode.FAILURE
+
+    assert f"Ingestion failed: embedding call to model@provider: {error}" in caplog.text
+
+
 def test_reindex_required_error_exits_with_1_and_suggests_reindex(
     run_ingestion: FakeRunIngestion, caplog: pytest.LogCaptureFixture
 ) -> None:

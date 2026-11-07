@@ -19,7 +19,9 @@ Do not guess or add steps that are not in the passages."""
 CONDENSE_SYSTEM_PROMPT = """\
 Rewrite the latest question from an on-call engineer as a standalone question that can be \
 understood without the conversation. Keep every service, command and error it refers to. \
-If it is already standalone, return it unchanged. Output only the question."""
+Rewrite it whenever it refers to the conversation: a pronoun such as it, that or this, a \
+leading "and" or "also", or words left out. Return it unchanged only if it has no such \
+reference. Output only the question."""
 
 NO_CONTEXT_ANSWER = "No relevant documentation was found for this question."
 

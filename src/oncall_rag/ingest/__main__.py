@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from oncall_rag.ingest.wiring import ingestion_pipeline
 from oncall_rag.shared.config import IngestSettings
 from oncall_rag.shared.errors import ProviderResponseError, ReindexRequiredError
-from oncall_rag.shared.logging import configure_logging
+from oncall_rag.shared.logging import configure_logging, failure_summary
 
 logger = logging.getLogger("oncall_rag.ingest")
 
@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Ingestion failed: %s %s", error, REINDEX_HINT)
         return ExitCode.FAILURE
     except (NotADirectoryError, ProviderResponseError, openai.OpenAIError, psycopg.Error) as error:
-        logger.error("Ingestion failed: %s", error)
+        logger.error("Ingestion failed: %s", failure_summary(error))
         return ExitCode.FAILURE
     return ExitCode.OK
 

@@ -70,6 +70,14 @@ class OpenAICompatibleEmbedder(Embedder):
         return text
 
     async def _embed(self, inputs: Sequence[str]) -> list[list[float]]:
+        """Errors propagate unchanged, with a note naming this call for the caller's log."""
+        try:
+            return await self._request_vectors(inputs)
+        except (openai.OpenAIError, ProviderResponseError) as error:
+            error.add_note(f"embedding call to {self.embedding_identity}")
+            raise
+
+    async def _request_vectors(self, inputs: Sequence[str]) -> list[list[float]]:
         # Qwen3-Embedding is trained to be truncated (the 8B model is 4096-dimensional), and both
         # providers return the first `dimensions` values, normalized again.
         response = await self._client.embeddings.create(

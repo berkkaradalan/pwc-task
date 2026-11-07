@@ -61,7 +61,9 @@ database error `column "embedding_identity" does not exist`.
 The command exits with `0` on success, `1` on fatal errors (database or embedding service
 unreachable, documents folder missing, index incompatible with the configuration, an
 embedding with the wrong length) and `2` on invalid configuration. Invalid settings are
-logged by name and reason, never with their values.
+logged by name and reason, never with their values. A failed embedding call is logged with
+the call and its model identity, e.g. `Ingestion failed: embedding call to
+qwen/qwen3-embedding-8b@deepinfra: Connection error.`
 
 ## Ingestion design
 
@@ -236,7 +238,10 @@ are at `/docs`.
 
 Errors use FastAPI's default bodies. Adapters let the `openai` and `psycopg` exceptions
 propagate unchanged; the `/ask` route translates them into `HTTPException` with a short,
-fixed `detail`. The exception text, which may name internal hosts, is only logged.
+fixed `detail`. The exception text, which may name internal hosts, is only logged. The
+adapters add a note to the exception without changing it, so the warning also names the
+failed call and its model, e.g. `Answering failed: embedding call to
+qwen/qwen3-embedding-8b@deepinfra: Error code: 404 - ...`.
 
 | Status | Body | Cause |
 |---|---|---|
@@ -372,7 +377,10 @@ guess.
 **Conversation history.** The API stays stateless: the client sends the earlier turns with
 each request and the server stores nothing. A follow-up such as "Why not?" cannot be
 searched as is, so `condense_question` first asks the language model to rewrite it as a
-standalone question from the history (a short prompt in `query/rag/prompts.py`); `retrieve`
+standalone question from the history (a short prompt in `query/rag/prompts.py`). The prompt
+asks for a rewrite whenever the question refers to the conversation (it, that, this, a
+leading "and" or "also", or words left out), and allows it unchanged only otherwise; each
+rewrite is logged at INFO with the request ID. `retrieve`
 embeds that rewrite, never the raw follow-up, and the response returns it as
 `search_query`. `generate` then sends the history as earlier chat messages, followed by the
 passages and the original question. Without history no extra call is made. Clients can

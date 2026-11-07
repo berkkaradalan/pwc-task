@@ -33,7 +33,15 @@ class OpenAICompatibleLLM(LanguageModel):
     async def complete(
         self, system_prompt: str, user_prompt: str, history: Sequence[ChatMessage] = ()
     ) -> str:
+        """Errors propagate unchanged, with a note naming this call for the caller's log."""
         messages = _chat_messages(system_prompt, user_prompt, history)
+        try:
+            return await self._request_answer(messages)
+        except (openai.OpenAIError, ProviderResponseError) as error:
+            error.add_note(f"LLM call to {self._model}")
+            raise
+
+    async def _request_answer(self, messages: list[ChatCompletionMessageParam]) -> str:
         async with self._call_slots:
             completion = await self._client.chat.completions.create(
                 model=self._model,

@@ -136,3 +136,23 @@ async def test_concurrent_calls_are_limited() -> None:
     await asyncio.gather(*(llm.complete("system", "user") for _ in range(6)))
 
     assert peak == 2
+
+
+@pytest.mark.parametrize(
+    ("response", "error_type"),
+    [
+        pytest.param(httpx2.Response(404, json={}), openai.NotFoundError, id="sdk"),
+        pytest.param(
+            httpx2.Response(200, json=completion_body("")), ProviderResponseError, id="unusable"
+        ),
+    ],
+)
+async def test_errors_propagate_unchanged_with_a_note_naming_the_call(
+    response: httpx2.Response, error_type: type[Exception]
+) -> None:
+    llm = make_llm(httpx2.MockTransport(lambda _: response))
+
+    with pytest.raises(error_type) as error:
+        await llm.complete("system rules", "the question")
+
+    assert error.value.__notes__ == [f"LLM call to {MODEL}"]

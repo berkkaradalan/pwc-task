@@ -1,3 +1,7 @@
+import logging
+
+import pytest
+
 from oncall_rag.query.rag.graph import (
     Node,
     RetrievalConfig,
@@ -11,6 +15,7 @@ from oncall_rag.shared.models import ChatMessage, ChatRole, Passage
 from tests.fakes import FakeEmbedder, FakeLanguageModel, InMemoryVectorStore
 
 RETRIEVAL = RetrievalConfig(top_k=3, min_similarity=0.5)
+GRAPH_LOGGER = "oncall_rag.query.rag.graph"
 HISTORY = [
     ChatMessage(ChatRole.USER, "Should I run FLUSHALL?"),
     ChatMessage(ChatRole.ASSISTANT, "No."),
@@ -91,3 +96,20 @@ async def test_only_the_most_recent_history_that_fits_reaches_the_llm() -> None:
     assert older.content in condense_call.user_prompt
     assert latest.content in condense_call.user_prompt
     assert generate_call.history == [older, latest]
+
+
+async def test_the_condensed_search_query_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    store = InMemoryVectorStore()
+    store.search_results = [passage("redis.md", 0.9)]
+    llm = FakeLanguageModel("Why not run FLUSHALL?", "Because it deletes every key.")
+    graph = build_graph(FakeEmbedder(), store, llm, RETRIEVAL)
+
+    with caplog.at_level(logging.INFO, logger=GRAPH_LOGGER):
+        await graph.ainvoke(initial_state("Why not?", HISTORY))
+
+    [record] = [record for record in caplog.records if record.name == GRAPH_LOGGER]
+    assert record.levelno == logging.INFO
+    assert (
+        record.getMessage()
+        == "Condensed the follow-up into the search query 'Why not run FLUSHALL?'"
+    )

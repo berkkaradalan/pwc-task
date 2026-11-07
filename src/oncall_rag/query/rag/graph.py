@@ -1,5 +1,6 @@
 """Answering flow: [condense_question ->] retrieve -> generate | no_context -> END."""
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -22,6 +23,8 @@ from oncall_rag.query.rag.state import (
     RetrievalUpdate,
 )
 from oncall_rag.shared.ports import Embedder, LanguageModel, PassageSearch
+
+logger = logging.getLogger(__name__)
 
 RagGraph = CompiledStateGraph[RagState, None, RagState, RagState]
 
@@ -80,6 +83,7 @@ class _Nodes:
     async def condense_question(self, state: RagState) -> CondenseUpdate:
         prompt = build_condense_prompt(recent_history(state["history"]), state["question"])
         search_query = await self.llm.complete(CONDENSE_SYSTEM_PROMPT, prompt)
+        logger.info("Condensed the follow-up into the search query %r", search_query)
         return {"search_query": search_query}
 
     async def retrieve(self, state: RagState) -> RetrievalUpdate:

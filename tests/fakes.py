@@ -47,15 +47,21 @@ class FakeEmbedder(Embedder):
 
 
 class FakeEmbeddingsApi:
-    """httpx2.MockTransport handler for `/v1/embeddings`; records request payloads."""
+    """httpx2.MockTransport handler for `/v1/embeddings`; records request payloads.
 
-    def __init__(self, dimension: int) -> None:
+    Answers every request with `status_code`; only 200 carries embeddings.
+    """
+
+    def __init__(self, dimension: int, status_code: int = 200) -> None:
         self.dimension = dimension
+        self.status_code = status_code
         self.payloads: list[dict] = []
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(request.content)
         self.payloads.append(payload)
+        if self.status_code != httpx2.codes.OK:
+            return httpx2.Response(self.status_code, json={})
         data = [
             {
                 "object": "embedding",
