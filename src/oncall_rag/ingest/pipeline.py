@@ -56,7 +56,20 @@ class IngestionPipeline:
             await self._store.reset()
         else:
             await self._store.initialize()
+            await self._rebuild_if_model_changed()
         await self._store.ensure_compatible(self._embedder.model_name)
+
+    async def _rebuild_if_model_changed(self) -> None:
+        """Vectors from different models are not comparable, so every document is embedded again."""
+        model = self._embedder.model_name
+        previous_models = await self._store.list_embedding_models() - {model}
+        if not previous_models:
+            return
+        previous = ", ".join(sorted(previous_models))
+        logger.warning(
+            "Embedding model changed from %s to %s: rebuilding the index", previous, model
+        )
+        await self._store.reset()
 
     async def _index_changed(self, documents: list[Document], report: IngestionReport) -> None:
         for document in documents:

@@ -1,14 +1,15 @@
+import logging
 from pathlib import Path
 
 import pytest
 
 from oncall_rag.ingest.chunker import ChunkingConfig
 from oncall_rag.ingest.pipeline import IngestionPipeline
-from oncall_rag.shared.errors import ReindexRequiredError
 from tests.fakes import FakeEmbedder, InMemoryVectorStore
 
 VALID_SOURCES = ["no-front-matter.md", "notes/database-failover.txt", "payments-outage.md"]
 CHUNKING = ChunkingConfig(max_chars=500, overlap_chars=50)
+PIPELINE_LOGGER = "oncall_rag.ingest.pipeline"
 
 
 def make_pipeline(embedder: FakeEmbedder, store: InMemoryVectorStore) -> IngestionPipeline:
@@ -117,23 +118,33 @@ async def test_previously_indexed_file_that_becomes_invalid_is_pruned(
     assert "payments-outage.md" not in store.documents
 
 
-async def test_embedding_model_mismatch_fails_before_any_work(
-    docs_dir: Path, store: InMemoryVectorStore
+async def test_embedding_model_change_rebuilds_the_index_with_one_warning(
+    docs_dir: Path, store: InMemoryVectorStore, caplog: pytest.LogCaptureFixture
 ) -> None:
     first = make_pipeline(FakeEmbedder(model_name="old-model"), store)
     await first.run(docs_dir)
-    (docs_dir / "no-front-matter.md").write_text("Changed.\n")
-    snapshot = dict(store.documents)
 
-    new_embedder = FakeEmbedder(model_name="new-model")
-    second = make_pipeline(new_embedder, store)
-    with pytest.raises(ReindexRequiredError) as error:
-        await second.run(docs_dir)
+    second = make_pipeline(FakeEmbedder(model_name="new-model"), store)
+    with caplog.at_level(logging.WARNING, logger=PIPELINE_LOGGER):
+        report = await second.run(docs_dir)
 
-    assert "old-model" in str(error.value)
-    assert "new-model" in str(error.value)
-    assert new_embedder.document_calls == []
-    assert store.documents == snapshot
+    assert store.reset_calls == 1
+    assert report.indexed == VALID_SOURCES
+    assert await store.list_embedding_models() == {"new-model"}
+    [warning] = [record for record in caplog.records if record.name == PIPELINE_LOGGER]
+    assert "old-model" in warning.getMessage()
+    assert "new-model" in warning.getMessage()
+
+
+async def test_same_embedding_model_does_not_rebuild(
+    docs_dir: Path, pipeline: IngestionPipeline, store: InMemoryVectorStore
+) -> None:
+    await pipeline.run(docs_dir)
+
+    report = await pipeline.run(docs_dir)
+
+    assert store.reset_calls == 0
+    assert report.unchanged == VALID_SOURCES
 
 
 async def test_reindex_rebuilds_with_the_new_model(

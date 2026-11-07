@@ -58,7 +58,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 async def run_ingestion(settings: IngestSettings, *, reindex: bool) -> None:
-    logger.info("Ingesting %s with embedding model %s", settings.docs_dir, settings.embedding_model)
+    embedding_model = settings.embedding_endpoint.model
+    logger.info("Ingesting %s with embedding model %s", settings.docs_dir, embedding_model)
     async with ingestion_pipeline(settings) as pipeline:
         await pipeline.run(settings.docs_dir, reindex=reindex)
 

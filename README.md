@@ -22,9 +22,9 @@ cp .env.example .env    # then set POSTGRES_PASSWORD and the matching DATABASE_U
 docker compose up --build ingest
 ```
 
-This starts `db` (PostgreSQL + pgvector) and `ollama`, pulls the models listed in
-`OLLAMA_PULL_MODELS` that are not present yet (`ollama-init`, so later runs work offline),
-then runs the one-shot `ingest` service. `data/docs` is mounted read-only, so after editing documents just run
+This starts `db` (PostgreSQL + pgvector) and `ollama`, pulls the two local models that are
+not present yet (`ollama-init`, so later runs work offline; it pulls nothing when `RUN_MODE`
+is `cloud`), then runs the one-shot `ingest` service. `data/docs` is mounted read-only, so after editing documents just run
 the command again.
 
 ### Locally with uv
@@ -37,7 +37,7 @@ uv sync
 uv run python -m oncall_rag.ingest
 ```
 
-`DATABASE_URL` and `EMBEDDING_BASE_URL` in `.env` point at the ports Compose publishes
+`DATABASE_URL` and `OLLAMA_BASE_URL` in `.env` point at the ports Compose publishes
 (`POSTGRES_HOST_PORT`, `OLLAMA_HOST_PORT`); change both together if a port is taken.
 
 ### Re-indexing
@@ -48,10 +48,12 @@ uv run python -m oncall_rag.ingest --reindex
 ```
 
 `--reindex` drops and recreates the tables with the current `EMBEDDING_DIM` and indexes
-every document again. It is required after changing `EMBEDDING_MODEL` or `EMBEDDING_DIM`
-(ingestion refuses to run otherwise) and recommended after changing the chunk settings.
+every document again. It is required after changing `EMBEDDING_DIM` (ingestion refuses to
+run otherwise) and recommended after changing the chunk settings. A different embedding
+model (for example after switching `RUN_MODE`) needs no flag: ingestion rebuilds the index
+by itself, see [Storage](#ingestion-design).
 
-The command exits with `0` on success, `1` on fatal errors (database or Ollama
+The command exits with `0` on success, `1` on fatal errors (database or embedding service
 unreachable, documents folder missing, index incompatible with the configuration, an
 embedding with the wrong length) and `2` on invalid configuration. Invalid settings are
 logged by name and reason, never with their values.
@@ -93,13 +95,17 @@ work. A changed file has its chunks replaced in a single transaction. Indexed do
 that were not loaded in this run (deleted, or now invalid) are removed. The hash covers
 file content only, so changing the chunk settings needs `--reindex`.
 
-**Embeddings.** `qwen3-embedding:0.6b` via Ollama: it runs locally on CPU, is
-multilingual, produces 1024-dimensional vectors and works with long inputs. It is
-instruction-aware, so queries get an instruction prefix and documents do not; this
-detail stays in the embedding adapter. The adapter uses the same `openai` SDK as the
-language model client, against Ollama's OpenAI-compatible endpoint
-(`${EMBEDDING_BASE_URL}/v1/embeddings`, float encoding, which returns the same vectors as
-Ollama's native `/api/embed`). Requests are batched (`EMBEDDING_BATCH_SIZE`), use explicit
+**Embeddings.** Qwen3-Embedding: `qwen3-embedding:0.6b` on Ollama in local mode,
+`qwen/qwen3-embedding-8b` on OpenRouter in cloud mode (see [Running modes](#running-modes)).
+Both are multilingual and work with long inputs. They are instruction-aware, so queries get
+an instruction prefix and documents do not; the adapter recognizes both model names, and
+this detail stays in the embedding adapter. Every request sends `dimensions=EMBEDDING_DIM`
+(1024): the models are trained so that the first values of a vector are a usable embedding
+on their own, and both providers return that prefix, normalized again. This keeps the 8B
+model (4096 values natively) under pgvector's HNSW limit. The adapter uses the same `openai`
+SDK as the language model client, against the provider's OpenAI-compatible
+`/v1/embeddings` endpoint (float encoding, which on Ollama returns the same vectors as its
+native `/api/embed`). Requests are batched (`EMBEDDING_BATCH_SIZE`), use explicit
 timeouts, are retried by the SDK (connection errors, timeouts, 408, 409, 429 and 5xx; three
 attempts in total), and every returned vector is checked against `EMBEDDING_DIM`.
 
@@ -108,8 +114,10 @@ HNSW index using cosine distance, which limits `EMBEDDING_DIM` to 2000 (pgvector
 the index above that). The application creates the `vector` extension (once per process,
 before the connection pool registers the vector type) and, during ingestion, the tables,
 because the vector column dimension comes from `EMBEDDING_DIM`. Each document records its embedding
-model. If the stored model or dimension differs from the configuration, ingestion stops
-and asks for `--reindex`, so vectors from different models are never mixed.
+model, so vectors from different models are never mixed. If the stored model differs from
+the configured one, ingestion logs one warning naming both models and rebuilds the index;
+with the same model nothing is rebuilt. If the stored dimension differs from
+`EMBEDDING_DIM`, ingestion stops and asks for `--reindex`.
 
 ## Running the API
 
@@ -123,9 +131,9 @@ This runs ingestion first (`api` starts only after `ingest` completed successful
 serves the API on `127.0.0.1:${API_HOST_PORT}` (default 8000). The container is healthy
 once `GET /health` answers `200`. To run the API on the host instead, start
 `docker compose up -d db ollama ollama-init`, run ingestion (see
-[Running ingestion](#running-ingestion)), set `LLM_BASE_URL` in `.env` to the host
-address (`http://localhost:${OLLAMA_HOST_PORT}/v1` in local mode), and run
-`uv run uvicorn oncall_rag.query.main:app --no-access-log`.
+[Running ingestion](#running-ingestion)), and run
+`uv run uvicorn oncall_rag.query.main:app --no-access-log`; `OLLAMA_BASE_URL` in `.env`
+already points at the host port.
 
 ### API
 
@@ -228,26 +236,49 @@ fixed `detail`. The exception text, which may name internal hosts, is only logge
 
 ## Running modes
 
-Switching between cloud and local is a configuration change only: `.env.example` has a
-local block (active by default) and a cloud block; keep exactly one active. Embeddings
-always run on the local Ollama service, so ingestion and retrieval are the same in both
-modes; only the answering model changes. Both modes use the same OpenAI-compatible client.
+`RUN_MODE` in `.env` selects where both models run: `local` (the default: Ollama, no account
+or key) or `cloud` (OpenRouter). Switching is a configuration change only. `shared/config.py`
+is the only place that turns the mode into an endpoint, a key and a model name; the
+adapters use the same OpenAI-compatible client in both modes. All four models are from the
+open-weights Qwen3 family, and their names are set in `.env`:
+
+| | Local (Ollama) | Cloud (OpenRouter) |
+|---|---|---|
+| Embeddings | `qwen3-embedding:0.6b` (`LOCAL_EMBEDDING_MODEL`) | `qwen/qwen3-embedding-8b` (`CLOUD_EMBEDDING_MODEL`) |
+| Answers | `qwen3:4b-instruct-2507-q4_K_M` (`LOCAL_LLM_MODEL`) | `qwen/qwen3-30b-a3b-instruct-2507` (`CLOUD_LLM_MODEL`) |
+
+Why these sizes:
+- `qwen3-embedding:0.6b`: small enough for a laptop CPU (about 1.2 GB loaded) and natively
+  1024-dimensional.
+- `qwen/qwen3-embedding-8b`: the largest model of the same family, with the same query
+  instruction; its 4096 values are truncated to `EMBEDDING_DIM` by the provider.
+- `qwen3:4b-instruct-2507-q4_K_M`: a 4-bit 4B model fits next to the embedding model in about
+  4.4 GB of memory.
+- `qwen/qwen3-30b-a3b-instruct-2507`: a mixture-of-experts model with 3.3B active parameters
+  per token, so it answers quickly; enough to answer from `RETRIEVAL_TOP_K` passages; about
+  $0.10 per million input and $0.30 per million output tokens on OpenRouter at the time of
+  writing; and the same 2507 instruct generation as the local model, so the prompts behave
+  the same.
+
+Both answering models are non-thinking "instruct" variants, so answers never contain
+reasoning output.
+
+Switching modes changes the embedding model. The next ingestion rebuilds the index (see
+[Storage](#ingestion-design)), and until then the API refuses to start.
+`docker compose up -d --build --wait api` runs ingestion first, so it does both.
 
 ### Cloud (OpenRouter)
 
 1. Create an account at [openrouter.ai](https://openrouter.ai), add credits, and create
    an API key on the [keys page](https://openrouter.ai/settings/keys).
-2. In `.env`, comment out the local block and uncomment the cloud block, then set
-   `LLM_API_KEY` to the key. The block uses `google/gemini-3.1-flash-lite`: fast and
-   inexpensive (about $0.25 per million input tokens and $1.50 per million output tokens
-   at the time of writing, i.e. well under a cent per question), and it follows
-   "answer only from these passages" instructions reliably. Any OpenRouter model can be
-   set in `LLM_MODEL`.
-3. `docker compose up -d --build --wait api`. Only the embedding model is pulled.
+2. In `.env`, set `RUN_MODE=cloud` and `OPENROUTER_API_KEY` to the key. Cloud mode without
+   a key is rejected as invalid configuration at startup.
+3. `docker compose up -d --build --wait api`. `ollama-init` pulls nothing; the `ollama`
+   container still starts, but nothing calls it.
 
 ### Local (Ollama)
 
-The local block is active by default and needs no account or key. `ollama-init` pulls:
+Local mode is the default and needs no account or key. `ollama-init` pulls:
 
 | Model | Purpose | Download | Memory when loaded |
 |---|---|---|---|
@@ -255,12 +286,11 @@ The local block is active by default and needs no account or key. `ollama-init` 
 | `qwen3:4b-instruct-2507-q4_K_M` | answers | ~2.5 GB | ~3.2 GB |
 
 Both models together use about 4.4 GB of memory once loaded (measured with `ollama ps`),
-and about 3.1 GB of disk. The answering model is the non-thinking "instruct" variant, so
-answers never contain reasoning output.
+and about 3.1 GB of disk.
 
 Compose runs Ollama on the CPU. Expect about 30-50 s per answer, and longer for the first
 question after a start, because a model is loaded on first use (and unloaded after a few
-idle minutes). `LLM_TIMEOUT_SECONDS` is 120 in the local block for this reason.
+idle minutes). `LLM_TIMEOUT_SECONDS` is 120 in `.env.example` for this reason.
 
 The `ollama` service has safeguards so that memory use stays predictable and a spike
 cannot take down the host:
@@ -279,8 +309,32 @@ the API answers `503` until it is started again.
 stack first (`docker compose down`); two Ollama instances with both models loaded need
 about twice the memory.
 
-Compared with the cloud model, the local model is slower and gives less polished answers
-to multi-part questions (see [Known limitations](#known-limitations)).
+### Cloud vs local
+
+Measured on the sample documents, one request at a time from the same machine: in cloud
+mode 15 questions and one follow-up, in local mode one question (should `FLUSHALL` fix
+Redis memory pressure).
+
+| | Local | Cloud |
+|---|---|---|
+| Answer latency | 45 s for the measured question; 30-50 s typical on CPU | 1.2-15.2 s, median 7.4 s over 14 answers; 13.9 s for the same question |
+| Fixed "no relevant context" answer | well under a second (local embedding call) | 3.5 and 8.8 s: the embedding call goes over the network and its latency varies |
+| First ingestion of the 12 documents | 65 s | 80 s |
+| Top similarity, answerable vs unrelated | 0.64-0.81 vs 0.20-0.41 | 0.61-0.91 vs 0.27-0.37 |
+
+Quality differences seen in these runs:
+- Both answered the `FLUSHALL` question correctly from the same passage. The cloud answer
+  also listed the mitigation steps in order; the local answer summarized them in one sentence.
+- The cloud model answered the factual questions (acknowledgement time, latency threshold,
+  postmortem deadline, `maxmemory`, pool size, severity of a queue backlog) in one or two
+  sentences each, and condensed the "Why not?" follow-up into a full question that
+  retrieved the Redis runbook again.
+- Some prompt rules are missed in both modes: the cloud model also left out the 15-minute
+  secondary page and kept `payments-worker` in the rollback commands instead of `<service>`
+  (see [Known limitations](#known-limitations)).
+- The cloud embedder did not retrieve the replica-lag runbook for "a customer reloads after
+  paying and still sees the payment as pending", and the answer blamed a card processor
+  outage from the passages it got.
 
 ## Question answering design
 
@@ -317,19 +371,23 @@ that. Condensation uses the same adapter and concurrency limit as `generate`, so
 failures map to the same HTTP statuses.
 
 **Similarity threshold.** `RETRIEVAL_MIN_SIMILARITY` defaults to 0.5, calibrated on the
-sample documents. The top similarity of five answerable questions was 0.64 to 0.81, and
-of five unrelated questions 0.20 to 0.41 (the highest being an IT question the documents do
-not cover, about single sign-on for an HR portal). Re-check it after changing the
-documents or the embedding model.
+sample documents, and applies in both modes. With the local embedding model, the top
+similarity of five answerable questions was 0.64 to 0.81, and of five unrelated questions
+0.20 to 0.41 (the highest being an IT question the documents do not cover, about single
+sign-on for an HR portal). With the cloud embedding model, twelve answerable questions
+scored 0.61 to 0.91 and two unrelated ones 0.27 and 0.37. A question about a component the
+documents only mention (`rabbitmq-0` going down) scored 0.59, passed, and was answered as
+not covered. Re-check the threshold after changing the documents or an embedding model.
 
 **Startup.** The service refuses to start if the index has not been built yet (run
 ingestion first; only ingestion creates the schema) or was built with another embedding
-model or dimension; the logged error names the problem, and `--reindex` (see
-[Re-indexing](#re-indexing)) rebuilds the index. The database pool, the embedding client
+model or dimension; the logged error names the problem. Running ingestion rebuilds an index
+built with another model; a different dimension needs `--reindex` (see
+[Re-indexing](#re-indexing)). The database pool, the embedding client
 and the language model client are closed on shutdown.
 
-**Language model client.** The official `openai` SDK (`AsyncOpenAI`) with `LLM_BASE_URL`,
-`LLM_API_KEY` and `LLM_TIMEOUT_SECONDS`. At most `LLM_MAX_CONCURRENCY` calls run at once.
+**Language model client.** The official `openai` SDK (`AsyncOpenAI`) with the endpoint, key
+and model resolved from `RUN_MODE`, and `LLM_TIMEOUT_SECONDS`. At most `LLM_MAX_CONCURRENCY` calls run at once.
 The SDK retries connection errors, timeouts, 408, 409, 429 and 5xx responses once, so a
 timeout is reported after up to twice `LLM_TIMEOUT_SECONDS`.
 
@@ -359,7 +417,8 @@ same `request_id`, so a user can report it.
 
 ### Parallel execution
 
-**Implemented.** A question can wait in three places: the embedding call (HTTP to Ollama),
+**Implemented.** A question can wait in three places: the embedding call (HTTP to Ollama or
+OpenRouter),
 the vector search (PostgreSQL) and the answer (HTTP to the language model, seconds to
 tens of seconds). All three use async clients (`AsyncOpenAI` for both models, the async
 psycopg pool), so while one request waits for its answer the same process keeps serving
@@ -445,12 +504,14 @@ retrieval (one embedding call and one indexed query) takes well under a second.
 - Answer quality with the local 4B model is limited. It sometimes leaves out a fact that
   is in the passages (for example the 15-minute secondary page when asked about
   acknowledgement time), keeps the example service name in a runbook command instead of
-  `<service>`, and answers broad questions with long lists. The cloud model follows the
-  prompt more reliably.
+  `<service>`, and answers broad questions with long lists. The cloud model gave the first
+  two of these answers the same way (see [Cloud vs local](#cloud-vs-local)).
 - Local answers take about 30-50 s on CPU, and longer after a model was unloaded.
 - Retrieval is semantic only. A question that describes a symptom in other words than the
   runbook ("merchants keep getting logged out" for Redis evictions) may not retrieve that
-  runbook; the answer then says the documentation does not cover it rather than guessing.
+  runbook. The answer then usually says the documentation does not cover it, but it can
+  also answer from the wrong runbook: in cloud mode, a payment still "pending" after a
+  reload (replica lag) was blamed on a card processor outage.
 - A follow-up question costs one extra language model call to condense it. The rewrite is
   a single short question, so on CPU it added about 2 s to a 42 s answer in one measured
   follow-up, not a second full answer.
@@ -489,7 +550,8 @@ OLLAMA_MODELS_DIR=./.cache/ollama-models scripts/e2e.sh
 ```
 
 `scripts/e2e.sh` starts the Compose stack with the `compose.ci.yml` override (its own
-project name, no published ports) in local mode, so it needs no secrets. It runs `ingest`
+project name, no published ports, and `RUN_MODE=local` whatever `.env` says), so it needs
+no secrets. It runs `ingest`
 on the sample documents in `data/docs` and fails unless it exits with `0` and the `chunks`
 table is not empty. It then starts `api`, waits until it is healthy, and checks
 (`scripts/e2e_api_checks.py`) that a question the documents answer returns sources and
@@ -517,7 +579,7 @@ only from `shared`, never from each other.
 oncall-rag/
 ├── src/oncall_rag/
 │   ├── shared/                 # code used by every service
-│   │   ├── config.py           # pydantic-settings: common, ingest and query settings
+│   │   ├── config.py           # pydantic-settings; resolves RUN_MODE to endpoints and models
 │   │   ├── logging.py
 │   │   ├── errors.py           # application exceptions
 │   │   ├── models.py           # Document, Chunk, Passage, ChatMessage

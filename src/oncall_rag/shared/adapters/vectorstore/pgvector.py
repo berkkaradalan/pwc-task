@@ -147,15 +147,20 @@ class PgVectorStore(DocumentIndex, PassageSearch):
             cursor = await connection.execute("SELECT source FROM documents")
             return {row[0] for row in await cursor.fetchall()}
 
+    async def list_embedding_models(self) -> set[str]:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute("SELECT DISTINCT embedding_model FROM documents")
+            return {row[0] for row in await cursor.fetchall()}
+
     async def ensure_compatible(self, embedding_model: str) -> None:
         async with self._pool.connection() as connection:
             self._check_dimension(await self._stored_dimension(connection))
-            foreign = await self._stored_embedding_models(connection) - {embedding_model}
+        foreign = await self.list_embedding_models() - {embedding_model}
         if foreign:
             stored = ", ".join(sorted(foreign))
             raise ReindexRequiredError(
                 f"The index contains vectors from embedding model(s) [{stored}], "
-                f"but EMBEDDING_MODEL is '{embedding_model}'."
+                f"but the configured embedding model is '{embedding_model}'."
             )
 
     async def get_content_hash(self, source: str) -> str | None:
@@ -234,10 +239,6 @@ class PgVectorStore(DocumentIndex, PassageSearch):
                 f"The index stores {stored_dimension}-dimensional vectors, "
                 f"but EMBEDDING_DIM is {self._dimension}."
             )
-
-    async def _stored_embedding_models(self, connection: Connection) -> set[str]:
-        cursor = await connection.execute("SELECT DISTINCT embedding_model FROM documents")
-        return {row[0] for row in await cursor.fetchall()}
 
     async def _stored_dimension(self, connection: Connection) -> int | None:
         cursor = await connection.execute(_STORED_DIMENSION)

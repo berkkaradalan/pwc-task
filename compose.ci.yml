@@ -6,6 +6,15 @@ services:
   db:
     ports: !reset []
 
+  # CI has no API key: always local, whatever RUN_MODE says in .env.
+  ollama-init:
+    environment:
+      RUN_MODE: local
+
+  ingest:
+    environment:
+      RUN_MODE: local
+
   ollama:
     ports: !reset []
     volumes:
@@ -13,4 +22,6 @@ services:
       - ${OLLAMA_MODELS_DIR:?set OLLAMA_MODELS_DIR to a host folder for Ollama models}:/root/.ollama/models
 
   api:
+    environment:
+      RUN_MODE: local
     ports: !reset []

@@ -43,6 +43,10 @@ class DocumentIndex(ABC):
         """Sources of all indexed documents."""
 
     @abstractmethod
+    async def list_embedding_models(self) -> set[str]:
+        """Embedding models of all indexed documents."""
+
+    @abstractmethod
     async def get_content_hash(self, source: str) -> str | None:
         """Stored content hash for `source`, or None if it is not indexed."""
 

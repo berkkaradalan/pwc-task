@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     configure_api_logging()
     settings = QuerySettings()  # type: ignore[call-arg]  # values come from the environment
     async with answer_service_and_search(settings) as (answer_service, passage_search):
-        await passage_search.ensure_compatible(settings.embedding_model)
+        await passage_search.ensure_compatible(settings.embedding_endpoint.model)
         app.state.answer_service = answer_service
         app.state.passage_search = passage_search
         yield

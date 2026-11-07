@@ -18,8 +18,11 @@ INGEST_CONNECTIONS = 1
 
 @asynccontextmanager
 async def ingestion_pipeline(settings: IngestSettings) -> AsyncGenerator[IngestionPipeline]:
+    embedding_endpoint = settings.embedding_endpoint
     async with (
-        build_embedding_client(settings.embedding_base_url) as embedding_client,
+        build_embedding_client(
+            embedding_endpoint.base_url, embedding_endpoint.api_key.get_secret_value()
+        ) as embedding_client,
         connect_pgvector_store(
             settings.database_url.get_secret_value(),
             dimension=settings.embedding_dim,
@@ -28,7 +31,7 @@ async def ingestion_pipeline(settings: IngestSettings) -> AsyncGenerator[Ingesti
     ):
         embedder = OpenAICompatibleEmbedder(
             embedding_client,
-            model=settings.embedding_model,
+            model=embedding_endpoint.model,
             dimension=settings.embedding_dim,
             batch_size=settings.embedding_batch_size,
         )

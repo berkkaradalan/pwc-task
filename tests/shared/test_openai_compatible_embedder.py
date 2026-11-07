@@ -54,13 +54,15 @@ async def test_documents_are_embedded_in_batches_without_prefix() -> None:
     assert [p["input"] for p in handler.payloads] == [["a", "bb"], ["ccc", "dddd"], ["eeeee"]]
     assert all(p["model"] == "qwen3-embedding:0.6b" for p in handler.payloads)
     assert all(p["encoding_format"] == "float" for p in handler.payloads)
+    assert all(p["dimensions"] == DIMENSION for p in handler.payloads)
     assert [v[0] for v in vectors] == [1.0, 2.0, 3.0, 4.0, 5.0]
 
 
-async def test_qwen3_queries_get_an_instruction_prefix() -> None:
+@pytest.mark.parametrize("model", ["qwen3-embedding:0.6b", "qwen/qwen3-embedding-8b"])
+async def test_qwen3_queries_get_an_instruction_prefix(model: str) -> None:
     handler = FakeEmbeddingsApi()
 
-    await make_embedder(handler).embed_query("how do I roll back?")
+    await make_embedder(handler, model=model).embed_query("how do I roll back?")
 
     [text] = handler.payloads[0]["input"]
     assert text.startswith("Instruct: ")

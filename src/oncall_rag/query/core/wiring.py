@@ -23,27 +23,31 @@ async def answer_service_and_search(
     settings: QuerySettings,
 ) -> AsyncGenerator[tuple[AnswerService, PassageSearch]]:
     """The answer service and the passage search it uses; every client closes on exit."""
+    embedding_endpoint = settings.embedding_endpoint
+    llm_endpoint = settings.llm_endpoint
     async with (
-        build_embedding_client(settings.embedding_base_url) as embedding_client,
+        build_embedding_client(
+            embedding_endpoint.base_url, embedding_endpoint.api_key.get_secret_value()
+        ) as embedding_client,
         connect_pgvector_store(
             settings.database_url.get_secret_value(),
             dimension=settings.embedding_dim,
             pool_max_size=settings.db_pool_max_size,
         ) as store,
         build_llm_client(
-            settings.llm_base_url,
-            settings.llm_api_key.get_secret_value(),
+            llm_endpoint.base_url,
+            llm_endpoint.api_key.get_secret_value(),
             settings.llm_timeout_seconds,
         ) as llm_client,
     ):
         embedder = OpenAICompatibleEmbedder(
             embedding_client,
-            model=settings.embedding_model,
+            model=embedding_endpoint.model,
             dimension=settings.embedding_dim,
             batch_size=settings.embedding_batch_size,
         )
         llm = OpenAICompatibleLLM(
-            llm_client, model=settings.llm_model, max_concurrency=settings.llm_max_concurrency
+            llm_client, model=llm_endpoint.model, max_concurrency=settings.llm_max_concurrency
         )
         retrieval = RetrievalConfig(
             top_k=settings.retrieval_top_k, min_similarity=settings.retrieval_min_similarity

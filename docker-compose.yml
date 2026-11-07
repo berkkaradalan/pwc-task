@@ -39,16 +39,19 @@ services:
 
   ollama-init:
     image: ollama/ollama:0.40.5
-    # Pull only the models that are missing, so a restart works offline.
+    # Pull only the models that are missing, so a restart works offline. Cloud mode needs none.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        for model in $$OLLAMA_PULL_MODELS; do
+        if [ "$$RUN_MODE" = cloud ]; then exit 0; fi;
+        for model in "$$LOCAL_EMBEDDING_MODEL" "$$LOCAL_LLM_MODEL"; do
         ollama show "$$model" > /dev/null || ollama pull "$$model" || exit 1;
         done
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_PULL_MODELS: ${OLLAMA_PULL_MODELS:?set OLLAMA_PULL_MODELS in .env}
+      RUN_MODE: ${RUN_MODE:-local}
+      LOCAL_EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:?set LOCAL_EMBEDDING_MODEL in .env}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:?set LOCAL_LLM_MODEL in .env}
     depends_on:
       ollama:
         condition: service_healthy
@@ -58,7 +61,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      EMBEDDING_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: http://ollama:11434
       DOCS_DIR: data/docs
     volumes:
       - ./data/docs:/app/data/docs:ro
@@ -82,7 +85,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      EMBEDDING_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: http://ollama:11434
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     healthcheck:

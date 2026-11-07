@@ -83,10 +83,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Read model names
+      - name: Read local model names
         id: models
         run: |
-          names=$(grep -E '^OLLAMA_PULL_MODELS=' .env.example | cut -d= -f2 | tr -d '"' | tr ' ' '+')
+          names=$(grep -E '^LOCAL_(EMBEDDING|LLM)_MODEL=' .env.example | cut -d= -f2 | paste -sd+ -)
           echo "names=$names" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

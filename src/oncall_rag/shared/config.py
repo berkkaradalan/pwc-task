@@ -1,10 +1,31 @@
 """Application settings, loaded from environment variables and an optional `.env` file."""
 
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OLLAMA_API_PATH = "/v1"
+# Ollama ignores the key, but the OpenAI SDK requires one.
+OLLAMA_API_KEY = SecretStr("ollama")
+
+
+class RunMode(StrEnum):
+    LOCAL = "local"
+    CLOUD = "cloud"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelEndpoint:
+    """An OpenAI-compatible API and the model to call on it."""
+
+    base_url: str
+    api_key: SecretStr
+    model: str
 
 
 class CommonSettings(BaseSettings):
@@ -19,11 +40,33 @@ class CommonSettings(BaseSettings):
     )
 
     database_url: SecretStr
-    embedding_base_url: str
+    ollama_base_url: str
 
-    embedding_model: str = "qwen3-embedding:0.6b"
+    run_mode: RunMode = RunMode.LOCAL
+    openrouter_api_key: SecretStr | None = None
+
+    local_embedding_model: str
+    cloud_embedding_model: str
     embedding_dim: int = Field(default=1024, ge=1)
     embedding_batch_size: int = Field(default=32, ge=1)
+
+    @model_validator(mode="after")
+    def _require_key_in_cloud_mode(self) -> Self:
+        if self.run_mode is RunMode.CLOUD and self.openrouter_api_key is None:
+            raise ValueError("OPENROUTER_API_KEY is required when RUN_MODE is cloud")
+        return self
+
+    @property
+    def embedding_endpoint(self) -> ModelEndpoint:
+        return self._endpoint(self.local_embedding_model, self.cloud_embedding_model)
+
+    def _endpoint(self, local_model: str, cloud_model: str) -> ModelEndpoint:
+        """The only place that turns RUN_MODE into a provider."""
+        if self.run_mode is RunMode.LOCAL:
+            ollama_api_url = f"{self.ollama_base_url}{OLLAMA_API_PATH}"
+            return ModelEndpoint(ollama_api_url, OLLAMA_API_KEY, local_model)
+        assert self.openrouter_api_key is not None  # narrows the type: the validator requires it
+        return ModelEndpoint(OPENROUTER_BASE_URL, self.openrouter_api_key, cloud_model)
 
 
 class IngestSettings(CommonSettings):
@@ -40,9 +83,8 @@ class IngestSettings(CommonSettings):
 
 
 class QuerySettings(CommonSettings):
-    llm_base_url: str
-    llm_model: str
-    llm_api_key: SecretStr
+    local_llm_model: str
+    cloud_llm_model: str
     llm_timeout_seconds: float = Field(default=60, gt=0)
     llm_max_concurrency: int = Field(default=4, ge=1)
 
@@ -50,3 +92,7 @@ class QuerySettings(CommonSettings):
     retrieval_min_similarity: float = Field(default=0.5, ge=-1, le=1)
 
     db_pool_max_size: int = Field(default=10, ge=1)
+
+    @property
+    def llm_endpoint(self) -> ModelEndpoint:
+        return self._endpoint(self.local_llm_model, self.cloud_llm_model)

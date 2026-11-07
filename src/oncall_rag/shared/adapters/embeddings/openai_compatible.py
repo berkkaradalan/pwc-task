@@ -1,4 +1,4 @@
-"""Embeddings through an OpenAI-compatible API (Ollama's `/v1/embeddings`)."""
+"""Embeddings through an OpenAI-compatible API: Ollama locally, OpenRouter in the cloud."""
 
 from collections.abc import Sequence
 from typing import Final
@@ -8,9 +8,6 @@ import openai
 from oncall_rag.shared.errors import ProviderResponseError
 from oncall_rag.shared.ports import Embedder
 
-OPENAI_API_PATH = "/v1"
-# Ollama ignores the key, but the SDK requires one.
-PLACEHOLDER_API_KEY = "ollama"
 # Generous read timeout: the first request loads the model, and CPU-only hosts are slow.
 TIMEOUT = openai.Timeout(120.0, connect=5.0)
 # The SDK retries connection errors, timeouts, 408, 409, 429 and 5xx: three attempts in total.
@@ -19,16 +16,16 @@ MAX_RETRIES = 2
 ENCODING_FORMAT: Final = "float"
 
 # Qwen3-Embedding is instruction-aware: queries get an instruction prefix, documents do not.
-QWEN3_MODEL_PREFIX = "qwen3-embedding"
+# The name is part of both the Ollama tag and the OpenRouter id.
+QWEN3_MODEL_NAME = "qwen3-embedding"
 QWEN3_QUERY_INSTRUCTION = (
     "Given an on-call engineer's question, retrieve runbook passages that answer it"
 )
 
 
-def build_embedding_client(base_url: str) -> openai.AsyncOpenAI:
-    api_url = f"{base_url}{OPENAI_API_PATH}"
+def build_embedding_client(base_url: str, api_key: str) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(
-        base_url=api_url, api_key=PLACEHOLDER_API_KEY, timeout=TIMEOUT, max_retries=MAX_RETRIES
+        base_url=base_url, api_key=api_key, timeout=TIMEOUT, max_retries=MAX_RETRIES
     )
 
 
@@ -62,13 +59,18 @@ class OpenAICompatibleEmbedder(Embedder):
         return vector
 
     def _format_query(self, text: str) -> str:
-        if self._model.startswith(QWEN3_MODEL_PREFIX):
+        if QWEN3_MODEL_NAME in self._model:
             return f"Instruct: {QWEN3_QUERY_INSTRUCTION}\nQuery:{text}"
         return text
 
     async def _embed(self, inputs: Sequence[str]) -> list[list[float]]:
+        # Qwen3-Embedding is trained to be truncated (the 8B model is 4096-dimensional), and both
+        # providers return the first `dimensions` values, normalized again.
         response = await self._client.embeddings.create(
-            model=self._model, input=list(inputs), encoding_format=ENCODING_FORMAT
+            model=self._model,
+            input=list(inputs),
+            encoding_format=ENCODING_FORMAT,
+            dimensions=self._dimension,
         )
         vectors = [item.embedding for item in response.data]
         for vector in vectors:

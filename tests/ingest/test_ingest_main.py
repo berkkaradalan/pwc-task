@@ -18,7 +18,9 @@ EMBEDDING_REQUEST = httpx2.Request("POST", "http://ollama.test/v1/embeddings")
 def valid_settings() -> IngestSettings:
     return IngestSettings(
         database_url=SecretStr("postgresql://user:password@db/test"),
-        embedding_base_url="http://ollama.test",
+        ollama_base_url="http://ollama.test",
+        local_embedding_model="local-embedding",
+        cloud_embedding_model="cloud-embedding",
         _env_file=None,  # type: ignore[call-arg]  # pydantic-settings init option, unknown to type checkers
     )
 
@@ -66,7 +68,7 @@ def test_config_error_exits_with_2_without_running_ingestion(
     monkeypatch.setattr(ingest_main, "IngestSettings", IngestSettings)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("EMBEDDING_BASE_URL", "http://ollama.test")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.test")
 
     with caplog.at_level(logging.ERROR):
         assert ingest_main.main([]) == ExitCode.CONFIG_ERROR == 2
