@@ -94,14 +94,15 @@ class StoredDocument:
 
 
 class InMemoryVectorStore(DocumentIndex, PassageSearch):
-    """Stores documents in a dict. `search` returns the canned `vector_results` and
-    `full_text_results`."""
+    """Stores documents in a dict. `search` returns the canned `vector_results` (or those in
+    `vector_results_by_text` for that search text) and `full_text_results`."""
 
     def __init__(self) -> None:
         self.documents: dict[str, StoredDocument] = {}
         self.initialize_calls = 0
         self.reset_calls = 0
         self.vector_results: list[Passage] = []
+        self.vector_results_by_text: dict[str, list[Passage]] = {}
         self.full_text_results: list[Passage] = []
         self.search_calls: list[tuple[list[float], str, int]] = []
         self.is_down = False
@@ -119,8 +120,9 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
 
     async def search(self, vector: Sequence[float], text: str, limit: int) -> SearchCandidates:
         self.search_calls.append((list(vector), text, limit))
+        vector_results = self.vector_results_by_text.get(text, self.vector_results)
         return SearchCandidates(
-            by_vector=self.vector_results[:limit], by_full_text=self.full_text_results[:limit]
+            by_vector=vector_results[:limit], by_full_text=self.full_text_results[:limit]
         )
 
     async def list_sources(self) -> set[str]:

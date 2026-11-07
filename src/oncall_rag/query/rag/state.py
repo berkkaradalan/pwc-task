@@ -29,6 +29,11 @@ class RetrievalUpdate(TypedDict):
     passages: list[Passage]
 
 
+class SearchQueryRetrievalUpdate(TypedDict):
+    search_query: str
+    passages: list[Passage]
+
+
 class AnswerUpdate(TypedDict):
     answer: str
     status: AnswerStatus

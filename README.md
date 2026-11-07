@@ -375,8 +375,8 @@ Quality differences seen in these runs:
 
 ## Question answering design
 
-**Flow.** A LangGraph graph, compiled once at startup: `[condense_question ->] retrieve ->
-generate | no_context -> END` (`query/rag/graph.py`). All per-request data lives in the
+**Flow.** A LangGraph graph, compiled once at startup: `[condense_question ->] retrieve |
+retrieve_follow_up -> generate | no_context -> END` (`query/rag/graph.py`). All per-request data lives in the
 state of that invocation. A conditional edge from the start goes straight to `retrieve`
 when there is no history, and to `condense_question` otherwise (see Conversation history).
 `retrieve` embeds the search query (the question itself when there is no history) with
@@ -402,12 +402,22 @@ guess.
 **Conversation history.** The API stays stateless: the client sends the earlier turns with
 each request and the server stores nothing. A follow-up such as "Why not?" cannot be
 searched as is, so `condense_question` first asks the language model to rewrite it as a
-standalone question from the history (a short prompt in `query/rag/prompts.py`). The prompt
-asks for a rewrite whenever the question refers to the conversation (it, that, this, a
-leading "and" or "also", or words left out), and allows it unchanged only otherwise; each
-rewrite is logged at INFO with the request ID. `retrieve`
-embeds that rewrite, never the raw follow-up, and the response returns it as
-`search_query`. `generate` then sends the history as earlier chat messages, followed by the
+standalone question from the history (a short prompt in `query/rag/prompts.py`), which may
+return a standalone question unchanged; each rewrite is logged at INFO with the request ID.
+`retrieve` embeds that rewrite, and the response returns it as `search_query`. A stricter
+prompt that allowed an unchanged question only without a pronoun, a leading "and" or
+"also", or words left out made the local model return "Why not?" unchanged in 5 of 5 runs,
+against 0 of 5 with this one, so it was not kept.
+
+A small model does not always rewrite a follow-up, whatever the prompt says. Searched
+alone, "Why not?" scored 0.51 against an unrelated runbook, just above the gate, so "it
+found something" does not show that a question was standalone. When the rewrite equals the question apart from case and whitespace,
+`retrieve_follow_up` therefore searches twice, with the question alone and with the
+previous user question followed by it, and keeps the search whose closest chunk is more
+similar (0.76 on the Redis runbook for that follow-up). A standalone question on a new topic
+usually matches better alone, because the earlier topic dilutes it. This costs one more
+embedding call and search, and no language model call. Which search was kept is logged at
+INFO. `generate` then sends the history as earlier chat messages, followed by the
 passages and the original question. Without history no extra call is made. Clients can
 only send `user` and `assistant` messages: a `system` role is rejected with `422`, so a
 client cannot add instructions that compete with the system prompt. A request carries at
@@ -571,8 +581,10 @@ retrieval (one embedding call and one indexed query) takes well under a second.
 - A follow-up question costs one extra language model call to condense it. The rewrite is
   a single short question, so on CPU it added about 2 s to a 42 s answer in one measured
   follow-up, not a second full answer.
-- Small models may condense poorly: a rewrite that drops the subject retrieves the wrong
-  passages. `search_query` in the response shows what was searched for.
+- Small models may condense poorly. A follow-up returned unchanged is also searched after
+  the previous question, but a rewrite that drops the subject retrieves the wrong passages,
+  and only the previous question is added, not older turns. `search_query` in the
+  response shows what was searched for.
 - There is no authentication, by design for this scope: access control is left to where
   the API is deployed (Compose publishes it on `127.0.0.1` only).
 

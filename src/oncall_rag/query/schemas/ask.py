@@ -58,7 +58,9 @@ class AskResponse(BaseModel):
     search_query: str = Field(
         description=(
             "The question used for retrieval: the question itself without history, otherwise "
-            "the language model's standalone rewrite of it."
+            "the language model's standalone rewrite of it. If the model left it unchanged, "
+            "the question alone or after the previous user question, whichever matches the "
+            "documents more closely."
         )
     )
     sources: list[Source]

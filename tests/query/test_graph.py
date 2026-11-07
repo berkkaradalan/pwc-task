@@ -152,3 +152,69 @@ async def test_the_condensed_search_query_is_logged(caplog: pytest.LogCaptureFix
         record.getMessage()
         == "Condensed the follow-up into the search query 'Why not run FLUSHALL?'"
     )
+
+
+def graph_log_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == GRAPH_LOGGER]
+
+
+async def test_a_standalone_question_with_history_keeps_its_own_search(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    question = "How do I mitigate a payments worker queue backlog?"
+    store = InMemoryVectorStore()
+    store.vector_results = [passage("redis.md", 0.6)]
+    store.vector_results_by_text = {question: [passage("backlog.md", 0.8)]}
+    llm = FakeLanguageModel(question, "Scale the workers.")
+    graph = build_graph(FakeEmbedder(), store, llm, RETRIEVAL)
+
+    with caplog.at_level(logging.INFO, logger=GRAPH_LOGGER):
+        state = await graph.ainvoke(initial_state(question, HISTORY))
+
+    assert state["status"] == AnswerStatus.ANSWERED
+    assert state["search_query"] == question
+    assert [p.source for p in state["passages"]] == ["backlog.md"]
+    assert graph_log_messages(caplog) == [
+        "The follow-up was not rewritten",
+        "Searching with the follow-up alone: it matches better than with the previous question",
+    ]
+
+
+async def test_an_unrewritten_follow_up_is_searched_with_the_previous_question(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with_previous = "Should I run FLUSHALL? Why not?"
+    store = InMemoryVectorStore()
+    # Alone, the follow-up passes the gate on an unrelated runbook.
+    store.vector_results = [passage("escalation.md", 0.55)]
+    store.vector_results_by_text = {with_previous: [passage("redis.md", 0.8)]}
+    # Differs from the question only in case and whitespace.
+    llm = FakeLanguageModel(" why  NOT? ", "Because it deletes every key.")
+    graph = build_graph(FakeEmbedder(), store, llm, RETRIEVAL)
+
+    with caplog.at_level(logging.INFO, logger=GRAPH_LOGGER):
+        state = await graph.ainvoke(initial_state("Why not?", HISTORY))
+
+    assert state["status"] == AnswerStatus.ANSWERED
+    assert state["search_query"] == with_previous
+    assert [p.source for p in state["passages"]] == ["redis.md"]
+    assert [text for _, text, _ in store.search_calls] == ["Why not?", with_previous]
+    assert graph_log_messages(caplog) == [
+        "The follow-up was not rewritten",
+        "Searching with the previous question as 'Should I run FLUSHALL? Why not?'",
+    ]
+
+
+async def test_an_unrewritten_follow_up_that_matches_nothing_has_no_context() -> None:
+    store = InMemoryVectorStore()
+    store.vector_results = [passage("payments.md", 0.3)]
+    store.vector_results_by_text = {"Should I run FLUSHALL? Why not?": [passage("redis.md", 0.4)]}
+    llm = FakeLanguageModel("Why not?")
+    graph = build_graph(FakeEmbedder(), store, llm, RETRIEVAL)
+
+    state = await graph.ainvoke(initial_state("Why not?", HISTORY))
+
+    assert state["status"] == AnswerStatus.NO_RELEVANT_CONTEXT
+    assert state["passages"] == []
+    assert len(store.search_calls) == 2
+    assert len(llm.calls) == 1
