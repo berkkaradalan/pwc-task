@@ -1,5 +1,7 @@
 from itertools import pairwise
 
+import pytest
+
 from oncall_rag.ingest.chunker import (
     ChunkingConfig,
     build_embedding_text,
@@ -51,6 +53,23 @@ def test_markdown_is_split_on_headings_with_heading_path() -> None:
     assert [c.chunk_index for c in chunks] == [0, 1, 2, 3, 4]
     assert all(c.document_source == "runbook.md" for c in chunks)
     assert all(c.metadata == {"service": "payments-api"} for c in chunks)
+
+
+@pytest.mark.parametrize("heading", ["Related runbooks", "RELATED RUNBOOKS"])
+def test_related_runbooks_section_produces_no_chunk(heading: str) -> None:
+    before = "# Redis memory\n\nOverview.\n\n## Mitigation\n\nDelete expired keys.\n\n"
+    after = "## Escalation\n\nPage the platform team."
+    navigation = f"## {heading}\n\n- checkout-api-high-latency.md\n- severity-levels.md\n\n"
+
+    with_navigation = chunk_document(make_document(before + navigation + after), CONFIG)
+    without_navigation = chunk_document(make_document(before + after), CONFIG)
+
+    assert with_navigation == without_navigation
+    assert [c.heading_path for c in with_navigation] == [
+        "Redis memory",
+        "Redis memory > Mitigation",
+        "Redis memory > Escalation",
+    ]
 
 
 def test_hash_lines_inside_code_fences_are_not_headings() -> None:

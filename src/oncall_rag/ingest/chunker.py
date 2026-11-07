@@ -15,6 +15,8 @@ HEADING_LEVELS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
 # Paragraphs, then lines, then sentences; "" is the last-resort hard split.
 TEXT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 BLOCK_SEPARATOR = "\n\n"
+# Lists other files only: nothing to answer from, and it pollutes retrieval for short queries.
+NAVIGATION_HEADING = "Related runbooks"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +85,8 @@ def _markdown_sections(text: str) -> list[_Section]:
     sections: list[_Section] = []
     grouped = groupby(blocks, key=lambda block: _heading_path(block.metadata))
     for heading_path, same_heading in grouped:
+        if _is_navigation_only(heading_path):
+            continue
         body = BLOCK_SEPARATOR.join(block.page_content.strip() for block in same_heading)
         sections.append(_Section(heading_path=heading_path, text=body))
     return sections
@@ -91,3 +95,8 @@ def _markdown_sections(text: str) -> list[_Section]:
 def _heading_path(metadata: dict[str, str]) -> str:
     headings = [metadata[key] for _, key in HEADING_LEVELS if key in metadata]
     return HEADING_SEPARATOR.join(headings)
+
+
+def _is_navigation_only(heading_path: str) -> bool:
+    own_heading = heading_path.rsplit(HEADING_SEPARATOR, maxsplit=1)[-1]
+    return own_heading.casefold() == NAVIGATION_HEADING.casefold()

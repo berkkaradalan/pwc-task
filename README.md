@@ -78,7 +78,9 @@ UTF-8 are also skipped with a warning; one bad file never stops the run.
 (so `#` lines inside code are not headings and code indentation survives). Blocks under
 the same heading are joined again, so a code sample stays with the text that explains
 it, and each chunk keeps its heading path, e.g. `Payments outage > Mitigation >
-Rollback`. `.txt` files have no headings. Any section longer than `CHUNK_MAX_CHARS` is
+Rollback`. Sections headed "Related runbooks" (any case) are not indexed: they only list
+other files, carry nothing to answer from, and outrank the actual fix for short queries.
+`.txt` files have no headings. Any section longer than `CHUNK_MAX_CHARS` is
 split by `RecursiveCharacterTextSplitter` on paragraph, then line, then sentence
 boundaries, with up to `CHUNK_OVERLAP_CHARS` of overlap. The embedder receives
 `<title> > <heading path>` followed by the chunk text, so short chunks keep their
@@ -440,9 +442,6 @@ retrieval (one embedding call and one indexed query) takes well under a second.
   `<service>`, and answers broad questions with long lists. The cloud model follows the
   prompt more reliably.
 - Local answers take about 30-50 s on CPU, and longer after a model was unloaded.
-- "Related runbooks" sections are sometimes retrieved: they are short lists of links that
-  score well against many questions but add little to an answer, and they can push the
-  section with the actual fix out of the top `RETRIEVAL_TOP_K`.
 - Retrieval is semantic only. A question that describes a symptom in other words than the
   runbook ("merchants keep getting logged out" for Redis evictions) may not retrieve that
   runbook; the answer then says the documentation does not cover it rather than guessing.
