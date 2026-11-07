@@ -12,7 +12,10 @@ class Embedder(ABC):
     @property
     @abstractmethod
     def model_name(self) -> str:
-        """Identifier stored with every vector so different models are never mixed."""
+        """Identifier stored with every vector so different models are never mixed.
+
+        Includes the provider when one is pinned: providers may serve different weights.
+        """
 
     @abstractmethod
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:

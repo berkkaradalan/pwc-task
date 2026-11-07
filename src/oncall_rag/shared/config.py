@@ -21,11 +21,12 @@ class RunMode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ModelEndpoint:
-    """An OpenAI-compatible API and the model to call on it."""
+    """An OpenAI-compatible API, the model to call on it, and the OpenRouter provider to pin."""
 
     base_url: str
     api_key: SecretStr
     model: str
+    provider: str | None = None
 
 
 class CommonSettings(BaseSettings):
@@ -44,6 +45,7 @@ class CommonSettings(BaseSettings):
 
     run_mode: RunMode = RunMode.LOCAL
     openrouter_api_key: SecretStr | None = None
+    embedding_provider: str | None = None
 
     local_embedding_model: str
     cloud_embedding_model: str
@@ -51,22 +53,33 @@ class CommonSettings(BaseSettings):
     embedding_batch_size: int = Field(default=32, ge=1)
 
     @model_validator(mode="after")
-    def _require_key_in_cloud_mode(self) -> Self:
-        if self.run_mode is RunMode.CLOUD and self.openrouter_api_key is None:
+    def _require_cloud_settings(self) -> Self:
+        if self.run_mode is RunMode.LOCAL:
+            return self
+        if self.openrouter_api_key is None:
             raise ValueError("OPENROUTER_API_KEY is required when RUN_MODE is cloud")
+        if self.embedding_provider is None:
+            raise ValueError("EMBEDDING_PROVIDER is required when RUN_MODE is cloud")
         return self
 
     @property
     def embedding_endpoint(self) -> ModelEndpoint:
-        return self._endpoint(self.local_embedding_model, self.cloud_embedding_model)
+        # Pinned: providers serve different weights (bf16, fp8), and vectors must not mix.
+        return self._endpoint(
+            self.local_embedding_model, self.cloud_embedding_model, self.embedding_provider
+        )
 
-    def _endpoint(self, local_model: str, cloud_model: str) -> ModelEndpoint:
+    def _endpoint(
+        self, local_model: str, cloud_model: str, cloud_provider: str | None = None
+    ) -> ModelEndpoint:
         """The only place that turns RUN_MODE into a provider."""
         if self.run_mode is RunMode.LOCAL:
             ollama_api_url = f"{self.ollama_base_url}{OLLAMA_API_PATH}"
             return ModelEndpoint(ollama_api_url, OLLAMA_API_KEY, local_model)
         assert self.openrouter_api_key is not None  # narrows the type: the validator requires it
-        return ModelEndpoint(OPENROUTER_BASE_URL, self.openrouter_api_key, cloud_model)
+        return ModelEndpoint(
+            OPENROUTER_BASE_URL, self.openrouter_api_key, cloud_model, cloud_provider
+        )
 
 
 class IngestSettings(CommonSettings):

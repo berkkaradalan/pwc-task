@@ -5,14 +5,17 @@ import pytest
 
 from oncall_rag.ingest.chunker import ChunkingConfig
 from oncall_rag.ingest.pipeline import IngestionPipeline
-from tests.fakes import FakeEmbedder, InMemoryVectorStore
+from oncall_rag.shared.adapters.embeddings.openai_compatible import OpenAICompatibleEmbedder
+from oncall_rag.shared.ports import Embedder
+from tests.fakes import FakeEmbedder, FakeEmbeddingsApi, InMemoryVectorStore
 
 VALID_SOURCES = ["no-front-matter.md", "notes/database-failover.txt", "payments-outage.md"]
 CHUNKING = ChunkingConfig(max_chars=500, overlap_chars=50)
 PIPELINE_LOGGER = "oncall_rag.ingest.pipeline"
+API_DIMENSION = 4
 
 
-def make_pipeline(embedder: FakeEmbedder, store: InMemoryVectorStore) -> IngestionPipeline:
+def make_pipeline(embedder: Embedder, store: InMemoryVectorStore) -> IngestionPipeline:
     return IngestionPipeline(embedder=embedder, store=store, chunking=CHUNKING)
 
 
@@ -134,6 +137,26 @@ async def test_embedding_model_change_rebuilds_the_index_with_one_warning(
     [warning] = [record for record in caplog.records if record.name == PIPELINE_LOGGER]
     assert "old-model" in warning.getMessage()
     assert "new-model" in warning.getMessage()
+
+
+async def test_embedding_provider_change_rebuilds_the_index(
+    docs_dir: Path, store: InMemoryVectorStore
+) -> None:
+    api = FakeEmbeddingsApi(API_DIMENSION)
+
+    for provider in ["nebius", "deepinfra"]:
+        embedder = OpenAICompatibleEmbedder(
+            api.client(),
+            model="qwen/qwen3-embedding-8b",
+            provider=provider,
+            dimension=API_DIMENSION,
+            batch_size=8,
+        )
+        report = await make_pipeline(embedder, store).run(docs_dir)
+
+    assert store.reset_calls == 1
+    assert report.indexed == VALID_SOURCES
+    assert await store.list_embedding_models() == {"qwen/qwen3-embedding-8b@deepinfra"}
 
 
 async def test_same_embedding_model_does_not_rebuild(

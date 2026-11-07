@@ -1,9 +1,12 @@
-"""In-memory test doubles for the domain ports. No network, no database."""
+"""In-memory test doubles for the domain ports and the embeddings API. No network, no database."""
 
 import hashlib
+import json
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
+import httpx2
+import openai
 import psycopg
 
 from oncall_rag.shared.errors import ReindexRequiredError
@@ -11,6 +14,7 @@ from oncall_rag.shared.models import ChatMessage, Chunk, Document, Passage
 from oncall_rag.shared.ports import DocumentIndex, Embedder, LanguageModel, PassageSearch
 
 FAKE_DIMENSION = 8
+FAKE_EMBEDDINGS_API_URL = "http://embeddings.test/v1"
 
 
 class FakeEmbedder(Embedder):
@@ -40,6 +44,39 @@ class FakeEmbedder(Embedder):
     def _vector(self, text: str) -> list[float]:
         digest = hashlib.sha256(text.encode("utf-8")).digest()
         return [byte / 255 for byte in digest[:FAKE_DIMENSION]]
+
+
+class FakeEmbeddingsApi:
+    """httpx2.MockTransport handler for `/v1/embeddings`; records request payloads."""
+
+    def __init__(self, dimension: int) -> None:
+        self.dimension = dimension
+        self.payloads: list[dict] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        payload = json.loads(request.content)
+        self.payloads.append(payload)
+        data = [
+            {
+                "object": "embedding",
+                "index": index,
+                "embedding": [float(len(text))] * self.dimension,
+            }
+            for index, text in enumerate(payload["input"])
+        ]
+        usage = {"prompt_tokens": 0, "total_tokens": 0}
+        return httpx2.Response(
+            200, json={"object": "list", "data": data, "model": payload["model"], "usage": usage}
+        )
+
+    def client(self) -> openai.AsyncOpenAI:
+        """An SDK client whose requests are answered by this handler."""
+        return openai.AsyncOpenAI(
+            base_url=FAKE_EMBEDDINGS_API_URL,
+            api_key="test-key",
+            max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(self)),
+        )
 
 
 @dataclass(frozen=True, slots=True)

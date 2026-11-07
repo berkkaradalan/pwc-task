@@ -102,7 +102,13 @@ an instruction prefix and documents do not; the adapter recognizes both model na
 this detail stays in the embedding adapter. Every request sends `dimensions=EMBEDDING_DIM`
 (1024): the models are trained so that the first values of a vector are a usable embedding
 on their own, and both providers return that prefix, normalized again. This keeps the 8B
-model (4096 values natively) under pgvector's HNSW limit. The adapter uses the same `openai`
+model (4096 values natively) under pgvector's HNSW limit. In cloud mode every request is
+pinned to one OpenRouter provider (`EMBEDDING_PROVIDER`, with fallbacks disabled):
+OpenRouter otherwise routes each request to any provider serving the model, and providers
+serve different weights (bf16, fp8), so documents and queries could be embedded
+differently. On the same input, the providers' vectors differed by up to 0.002 in cosine
+similarity, and Nebius returned slightly different vectors on every request; DeepInfra
+returned identical ones, so `.env.example` pins it. The adapter uses the same `openai`
 SDK as the language model client, against the provider's OpenAI-compatible
 `/v1/embeddings` endpoint (float encoding, which on Ollama returns the same vectors as its
 native `/api/embed`). Requests are batched (`EMBEDDING_BATCH_SIZE`), use explicit
@@ -114,9 +120,10 @@ HNSW index using cosine distance, which limits `EMBEDDING_DIM` to 2000 (pgvector
 the index above that). The application creates the `vector` extension (once per process,
 before the connection pool registers the vector type) and, during ingestion, the tables,
 because the vector column dimension comes from `EMBEDDING_DIM`. Each document records its embedding
-model, so vectors from different models are never mixed. If the stored model differs from
-the configured one, ingestion logs one warning naming both models and rebuilds the index;
-with the same model nothing is rebuilt. If the stored dimension differs from
+model, plus the provider when one is pinned (for example
+`qwen/qwen3-embedding-8b@deepinfra`), so vectors from different models or providers are
+never mixed. If the stored value differs from the configured one, ingestion logs one warning
+naming both and rebuilds the index; with the same value nothing is rebuilt. If the stored dimension differs from
 `EMBEDDING_DIM`, ingestion stops and asks for `--reindex`.
 
 ## Running the API
@@ -230,7 +237,7 @@ fixed `detail`. The exception text, which may name internal hosts, is only logge
 |---|---|---|
 | 422 | `{"detail": [...]}` | the request body is invalid |
 | 502 | `{"detail": "..."}` | the language model or embedding service rejected the request (e.g. bad API key, unknown model), or its answer is unusable (empty answer, wrong vector length) |
-| 503 | `{"detail": "..."}` | the language model or embedding service is unreachable, overloaded (429) or failing (5xx), or the database is unreachable |
+| 503 | `{"detail": "..."}` | the language model or embedding service is unreachable, overloaded (429) or failing (5xx), OpenRouter has no provider available for the model (404, for example the pinned embedding provider is down), or the database is unreachable |
 | 504 | `{"detail": "..."}` | the language model or embedding service did not answer in time (`LLM_TIMEOUT_SECONDS` for the language model) |
 | 500 | `{"detail": "Internal server error", "request_id": "..."}` | anything unexpected; the traceback is only in the logs, under the same request ID |
 
@@ -271,8 +278,12 @@ Switching modes changes the embedding model. The next ingestion rebuilds the ind
 
 1. Create an account at [openrouter.ai](https://openrouter.ai), add credits, and create
    an API key on the [keys page](https://openrouter.ai/settings/keys).
-2. In `.env`, set `RUN_MODE=cloud` and `OPENROUTER_API_KEY` to the key. Cloud mode without
-   a key is rejected as invalid configuration at startup.
+2. In `.env`, set `RUN_MODE=cloud` and `OPENROUTER_API_KEY` to the key, and keep
+   `EMBEDDING_PROVIDER` (see Embeddings in [Ingestion design](#ingestion-design)). Cloud
+   mode without either is rejected as invalid configuration at startup. If the pinned
+   provider is down, requests fail (`503`, ingestion exits with `1`) instead of silently
+   switching to another provider; set another one and run ingestion again, which then
+   rebuilds the index.
 3. `docker compose up -d --build --wait api`. `ollama-init` pulls nothing; the `ollama`
    container still starts, but nothing calls it.
 
@@ -381,8 +392,8 @@ not covered. Re-check the threshold after changing the documents or an embedding
 
 **Startup.** The service refuses to start if the index has not been built yet (run
 ingestion first; only ingestion creates the schema) or was built with another embedding
-model or dimension; the logged error names the problem. Running ingestion rebuilds an index
-built with another model; a different dimension needs `--reindex` (see
+model, provider or dimension; the logged error names the problem. Running ingestion rebuilds
+an index built with another model or provider; a different dimension needs `--reindex` (see
 [Re-indexing](#re-indexing)). The database pool, the embedding client
 and the language model client are closed on shutdown.
 

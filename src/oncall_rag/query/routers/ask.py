@@ -22,8 +22,10 @@ async def ask(request: AskRequest, answer_service: AnswerServiceDependency) -> A
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT, "A required service did not answer in time."
         ) from error
+    # On OpenRouter a 404 means no provider can serve the model, e.g. the pinned one is down.
     except (
         openai.APIConnectionError,
+        openai.NotFoundError,
         openai.RateLimitError,
         openai.InternalServerError,
         psycopg.OperationalError,

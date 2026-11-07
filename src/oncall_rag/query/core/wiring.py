@@ -22,7 +22,10 @@ from oncall_rag.shared.ports import PassageSearch
 async def answer_service_and_search(
     settings: QuerySettings,
 ) -> AsyncGenerator[tuple[AnswerService, PassageSearch]]:
-    """The answer service and the passage search it uses; every client closes on exit."""
+    """The answer service and the passage search it uses; every client closes on exit.
+
+    Refuses to start on a missing index or one built with other embeddings or dimension.
+    """
     embedding_endpoint = settings.embedding_endpoint
     llm_endpoint = settings.llm_endpoint
     async with (
@@ -43,6 +46,7 @@ async def answer_service_and_search(
         embedder = OpenAICompatibleEmbedder(
             embedding_client,
             model=embedding_endpoint.model,
+            provider=embedding_endpoint.provider,
             dimension=settings.embedding_dim,
             batch_size=settings.embedding_batch_size,
         )
@@ -52,5 +56,6 @@ async def answer_service_and_search(
         retrieval = RetrievalConfig(
             top_k=settings.retrieval_top_k, min_similarity=settings.retrieval_min_similarity
         )
+        await store.ensure_compatible(embedder.model_name)
         graph = build_graph(embedder, store, llm, retrieval)
         yield AnswerService(graph), store

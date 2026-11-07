@@ -32,6 +32,7 @@ async def ingestion_pipeline(settings: IngestSettings) -> AsyncGenerator[Ingesti
         embedder = OpenAICompatibleEmbedder(
             embedding_client,
             model=embedding_endpoint.model,
+            provider=embedding_endpoint.provider,
             dimension=settings.embedding_dim,
             batch_size=settings.embedding_batch_size,
         )

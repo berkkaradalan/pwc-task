@@ -14,6 +14,8 @@ TIMEOUT = openai.Timeout(120.0, connect=5.0)
 MAX_RETRIES = 2
 # Ollama's float output equals its native /api/embed vectors; the SDK default (base64) does not.
 ENCODING_FORMAT: Final = "float"
+# Joins model and provider in the identity stored with every vector, e.g. "model@provider".
+PROVIDER_SEPARATOR = "@"
 
 # Qwen3-Embedding is instruction-aware: queries get an instruction prefix, documents do not.
 # The name is part of both the Ollama tag and the OpenRouter id.
@@ -35,17 +37,21 @@ class OpenAICompatibleEmbedder(Embedder):
         client: openai.AsyncOpenAI,
         *,
         model: str,
+        provider: str | None,
         dimension: int,
         batch_size: int,
     ) -> None:
         self._client = client
         self._model = model
+        self._provider = provider
         self._dimension = dimension
         self._batch_size = batch_size
 
     @property
     def model_name(self) -> str:
-        return self._model
+        if self._provider is None:
+            return self._model
+        return f"{self._model}{PROVIDER_SEPARATOR}{self._provider}"
 
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
@@ -71,11 +77,18 @@ class OpenAICompatibleEmbedder(Embedder):
             input=list(inputs),
             encoding_format=ENCODING_FORMAT,
             dimensions=self._dimension,
+            extra_body=self._provider_routing(),
         )
         vectors = [item.embedding for item in response.data]
         for vector in vectors:
             self._check_dimension(vector)
         return vectors
+
+    def _provider_routing(self) -> dict[str, object] | None:
+        """OpenRouter's routing field: only the pinned provider, failing instead of falling back."""
+        if self._provider is None:
+            return None
+        return {"provider": {"order": [self._provider], "allow_fallbacks": False}}
 
     def _check_dimension(self, vector: list[float]) -> None:
         actual = len(vector)

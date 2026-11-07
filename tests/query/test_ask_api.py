@@ -230,6 +230,7 @@ def test_llm_failures_map_to_gateway_errors(
         pytest.param(openai.APIConnectionError(request=LLM_REQUEST), 503, id="connection"),
         pytest.param(status_error(openai.RateLimitError, 429), 503, id="rate-limit"),
         pytest.param(status_error(openai.InternalServerError, 500), 503, id="server-error"),
+        pytest.param(status_error(openai.NotFoundError, 404), 503, id="no-provider-available"),
         pytest.param(psycopg.OperationalError("db.internal down"), 503, id="database-down"),
         pytest.param(psycopg_pool.PoolTimeout("db.internal pool"), 503, id="pool-timeout"),
         pytest.param(status_error(openai.AuthenticationError, 401), 502, id="rejected"),

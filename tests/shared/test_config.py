@@ -20,6 +20,7 @@ def required_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RUN_MODE", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
     monkeypatch.setenv("DATABASE_URL", SECRET_URL)
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.test")
     monkeypatch.setenv("LOCAL_EMBEDDING_MODEL", "local-embedding")
@@ -37,6 +38,10 @@ def required_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         ),
         ({"EMBEDDING_DIM": "not-a-number"}, "embedding_dim"),
         ({"RUN_MODE": "cloud"}, "OPENROUTER_API_KEY is required when RUN_MODE is cloud"),
+        (
+            {"RUN_MODE": "cloud", "OPENROUTER_API_KEY": "not-a-number"},
+            "EMBEDDING_PROVIDER is required when RUN_MODE is cloud",
+        ),
     ],
 )
 def test_invalid_settings_raise_without_input_values(
@@ -73,11 +78,13 @@ def test_local_mode_is_the_default_and_uses_ollama() -> None:
     ]:
         assert endpoint.base_url == "http://ollama.test/v1"
         assert endpoint.model == model
+        assert endpoint.provider is None
 
 
 def test_cloud_mode_uses_openrouter_with_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RUN_MODE", "cloud")
     monkeypatch.setenv("OPENROUTER_API_KEY", SECRET_KEY)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "deepinfra")
 
     settings = QuerySettings()  # type: ignore[call-arg]  # values come from the environment
 
@@ -88,3 +95,5 @@ def test_cloud_mode_uses_openrouter_with_the_key(monkeypatch: pytest.MonkeyPatch
         assert endpoint.base_url == OPENROUTER_BASE_URL
         assert endpoint.api_key.get_secret_value() == SECRET_KEY
         assert endpoint.model == model
+    assert settings.embedding_endpoint.provider == "deepinfra"
+    assert settings.llm_endpoint.provider is None
