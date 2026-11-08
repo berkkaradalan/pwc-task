@@ -488,7 +488,8 @@ src/oncall_rag/
     ├── services/            # AnswerService: runs the graph, builds the response
     ├── schemas/             # request and response bodies
     └── rag/                 # graph, state, prompts, rank fusion
-tests/                       # mirrors src/oncall_rag; fakes.py, fixtures/docs/
+tests/                       # mirrors src/oncall_rag; fakes.py, fixtures/docs/,
+                             # integration/ against a real PostgreSQL
 scripts/                     # e2e.sh, e2e_api_checks.py
 data/docs/                   # the 16 sample runbooks (15 Markdown, 1 plain text)
 ```
@@ -501,6 +502,7 @@ CI runs `.github/workflows/ci.yml` on pushes to `main` and on pull requests:
 |---|---|
 | `lint` | `uv lock --check`, ruff check and format, mypy, hadolint, `docker compose config -q`, actionlint, gitleaks over the full history |
 | `test` | `uv run pytest --cov=oncall_rag`, coverage summary |
+| `integration` | `uv run pytest -m integration --cov=oncall_rag` against a pgvector service container (the Compose image), coverage summary |
 | `build` | image build, Trivy scan that fails on fixable CRITICAL vulnerabilities |
 | `e2e` | `scripts/e2e.sh` in local mode, with the Ollama models cached between runs |
 

@@ -47,7 +47,7 @@ def run_ingestion(monkeypatch: pytest.MonkeyPatch) -> FakeRunIngestion:
 
 
 def test_success_exits_with_0(run_ingestion: FakeRunIngestion) -> None:
-    assert ingest_main.main([]) == ExitCode.OK == 0
+    assert ingest_main.main([]) == ExitCode.OK == 0  # type: ignore[comparison-overlap]  # an IntEnum member equals its int
     [(_, reindex)] = run_ingestion.calls
     assert reindex is False
 
@@ -71,7 +71,7 @@ def test_config_error_exits_with_2_without_running_ingestion(
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.test")
 
     with caplog.at_level(logging.ERROR):
-        assert ingest_main.main([]) == ExitCode.CONFIG_ERROR == 2
+        assert ingest_main.main([]) == ExitCode.CONFIG_ERROR == 2  # type: ignore[comparison-overlap]  # an IntEnum member equals its int
 
     assert run_ingestion.calls == []
     assert "database_url" in caplog.text
@@ -93,7 +93,7 @@ def test_ingestion_error_exits_with_1(
     run_ingestion.error = error
 
     with caplog.at_level(logging.ERROR):
-        assert ingest_main.main([]) == ExitCode.FAILURE == 1
+        assert ingest_main.main([]) == ExitCode.FAILURE == 1  # type: ignore[comparison-overlap]  # an IntEnum member equals its int
 
     assert f"Ingestion failed: {error}" in caplog.text
 

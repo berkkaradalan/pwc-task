@@ -1,7 +1,12 @@
 import openai
 import pytest
 
-from oncall_rag.shared.adapters.embeddings.openai_compatible import OpenAICompatibleEmbedder
+from oncall_rag.shared.adapters.embeddings.openai_compatible import (
+    MAX_RETRIES,
+    TIMEOUT,
+    OpenAICompatibleEmbedder,
+    build_embedding_client,
+)
 from oncall_rag.shared.errors import ProviderResponseError
 from tests.fakes import FakeEmbeddingsApi
 
@@ -89,3 +94,9 @@ async def test_errors_propagate_unchanged_with_a_note_naming_the_call(
         await embedder.embed_query("how do I roll back?")
 
     assert error.value.__notes__ == ["embedding call to qwen/qwen3-embedding-8b@deepinfra"]
+
+
+async def test_client_gets_the_embedding_timeout_and_retries() -> None:
+    async with build_embedding_client("http://embeddings.test/v1", "test-key") as client:
+        assert client.timeout == TIMEOUT
+        assert client.max_retries == MAX_RETRIES

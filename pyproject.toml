@@ -77,3 +77,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.mypy]
 strict = true
+# Tests are checked too; they have no __init__.py, so modules are named after their path from
+# the root, and src/ maps to the oncall_rag package.
+mypy_path = "src"
+explicit_package_bases = true

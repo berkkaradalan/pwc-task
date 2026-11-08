@@ -28,9 +28,10 @@ Run everything from the repository root.
 ```bash
 uv sync                          # install from uv.lock
 uv run pytest --cov=oncall_rag   # unit tests
+uv run pytest -m integration     # needs INTEGRATION_DATABASE_URL, see Tests
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src                  # strict
+uv run mypy src tests            # strict
 uv lock --check
 docker compose config -q         # needs .env (copy .env.example)
 OLLAMA_MODELS_DIR=./.cache/ollama-models scripts/e2e.sh   # end to end, local mode
@@ -108,7 +109,21 @@ Change it in this order: `docker compose down`, edit `RUN_MODE`, then
 - Never delete, skip or weaken a test to make it pass. A refactor keeps every existing
   test green without changing what it asserts.
 - Tests that need real services are marked `@pytest.mark.integration`, which is excluded by
-  default. The real stack is covered by `scripts/e2e.sh`.
+  default. They live in `tests/integration/` and run against a throwaway PostgreSQL with
+  pgvector. `INTEGRATION_DATABASE_URL` names its `postgres` maintenance database, and each
+  test creates and drops its own database. Locally:
+
+  ```bash
+  docker run -d --rm --name oncall-rag-it -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -p 127.0.0.1:55432:5432 pgvector/pgvector:0.8.6-pg17-bookworm
+  until docker exec oncall-rag-it pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+  INTEGRATION_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/postgres \
+    uv run pytest -m integration
+  docker rm -f oncall-rag-it
+  ```
+
+  Without the variable they are skipped; in CI they fail instead.
+- The full stack is covered by `scripts/e2e.sh`.
 
 ## Docs
 
@@ -140,7 +155,7 @@ contributor's machine or local setup.
 
 Before reporting a change as done:
 
-- [ ] `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src`,
+- [ ] `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src tests`,
       `uv lock --check` and `uv run pytest` pass.
 - [ ] `docker compose config -q` passes if Compose files or `.env.example` changed.
 - [ ] Every changed line has a reason tied to the task; no rule above is broken.

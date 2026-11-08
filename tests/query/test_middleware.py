@@ -43,7 +43,7 @@ def test_access_log_line_names_method_path_status_and_request_id(
     [record] = access_records(access_log)
     assert record.getMessage().startswith("GET /health 200 ")
     assert record.getMessage().endswith(" ms")
-    assert record.correlation_id == response.headers[REQUEST_ID_HEADER]
+    assert record.correlation_id == response.headers[REQUEST_ID_HEADER]  # type: ignore[attr-defined]  # added by CorrelationIdFilter
 
 
 def test_unexpected_error_is_logged_as_500_with_its_request_id(
@@ -55,4 +55,4 @@ def test_unexpected_error_is_logged_as_500_with_its_request_id(
 
     [record] = access_records(access_log)
     assert record.getMessage().startswith("POST /ask 500 ")
-    assert record.correlation_id == response.json()["request_id"]
+    assert record.correlation_id == response.json()["request_id"]  # type: ignore[attr-defined]  # added by CorrelationIdFilter

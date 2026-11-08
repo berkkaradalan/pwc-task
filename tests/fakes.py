@@ -1,9 +1,12 @@
-"""In-memory test doubles for the domain ports and the embeddings API. No network, no database."""
+"""In-memory test doubles for the domain ports, the provider APIs and the builders the
+composition roots call. No network, no database."""
 
 import hashlib
 import json
-from collections.abc import Collection, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import httpx2
 import openai
@@ -15,6 +18,7 @@ from oncall_rag.shared.ports import DocumentIndex, Embedder, LanguageModel, Pass
 
 FAKE_DIMENSION = 8
 FAKE_EMBEDDINGS_API_URL = "http://embeddings.test/v1"
+FAKE_PROVIDER_API_URL = "http://provider.test/v1"
 
 
 class FakeEmbedder(Embedder):
@@ -55,7 +59,7 @@ class FakeEmbeddingsApi:
     def __init__(self, dimension: int, status_code: int = 200) -> None:
         self.dimension = dimension
         self.status_code = status_code
-        self.payloads: list[dict] = []
+        self.payloads: list[dict[str, Any]] = []
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(request.content)
@@ -105,6 +109,7 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
         self.vector_results_by_text: dict[str, list[Passage]] = {}
         self.full_text_results: list[Passage] = []
         self.search_calls: list[tuple[list[float], str, int]] = []
+        self.compatibility_checks: list[str] = []
         self.is_down = False
 
     async def initialize(self) -> None:
@@ -132,6 +137,7 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
         return {stored.embedding_identity for stored in self.documents.values()}
 
     async def ensure_compatible(self, embedding_identity: str) -> None:
+        self.compatibility_checks.append(embedding_identity)
         foreign = await self.list_embedding_identities() - {embedding_identity}
         if foreign:
             stored = ", ".join(sorted(foreign))
@@ -160,6 +166,84 @@ class InMemoryVectorStore(DocumentIndex, PassageSearch):
     async def delete_documents(self, sources: Collection[str]) -> None:
         for source in sources:
             del self.documents[source]
+
+
+@dataclass(frozen=True, slots=True)
+class StoreConnection:
+    database_url: str
+    dimension: int
+    pool_max_size: int
+
+
+class FakeStoreConnector:
+    """Stands in for `connect_pgvector_store`: records the arguments and yields `store`."""
+
+    def __init__(self, store: InMemoryVectorStore) -> None:
+        self.store = store
+        self.connections: list[StoreConnection] = []
+
+    @asynccontextmanager
+    async def __call__(
+        self, database_url: str, *, dimension: int, pool_max_size: int
+    ) -> AsyncIterator[InMemoryVectorStore]:
+        self.connections.append(StoreConnection(database_url, dimension, pool_max_size))
+        yield self.store
+
+
+class FakeChatApi:
+    """httpx2.MockTransport handler for `/v1/chat/completions`; answers every request with
+    `answer` and records the request payloads."""
+
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+        self.payloads: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        payload = json.loads(request.content)
+        self.payloads.append(payload)
+        message = {"role": "assistant", "content": self.answer}
+        choice = {"index": 0, "finish_reason": "stop", "message": message}
+        completion = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": payload["model"],
+            "choices": [choice],
+        }
+        return httpx2.Response(200, json=completion)
+
+
+class FakeClientBuilder:
+    """Stands in for `build_embedding_client` or `build_llm_client`: records the arguments and
+    returns an SDK client whose requests are answered by `responder`."""
+
+    def __init__(self, responder: Callable[[httpx2.Request], httpx2.Response]) -> None:
+        self.responder = responder
+        self.calls: list[tuple[object, ...]] = []
+        self.clients: list[openai.AsyncOpenAI] = []
+
+    def __call__(self, *arguments: object) -> openai.AsyncOpenAI:
+        self.calls.append(arguments)
+        client = openai.AsyncOpenAI(
+            base_url=FAKE_PROVIDER_API_URL,
+            api_key="test-key",
+            max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(self.responder)),
+        )
+        self.clients.append(client)
+        return client
+
+
+@dataclass(frozen=True, slots=True)
+class FakeProviders:
+    """What the query composition root gets instead of the database pool and the SDK clients."""
+
+    store: InMemoryVectorStore
+    connector: FakeStoreConnector
+    embeddings_api: FakeEmbeddingsApi
+    chat_api: FakeChatApi
+    embedding_clients: FakeClientBuilder
+    llm_clients: FakeClientBuilder
 
 
 @dataclass(frozen=True, slots=True)

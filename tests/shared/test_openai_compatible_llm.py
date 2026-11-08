@@ -5,7 +5,11 @@ import httpx2
 import openai
 import pytest
 
-from oncall_rag.shared.adapters.llm.openai_compatible import OpenAICompatibleLLM
+from oncall_rag.shared.adapters.llm.openai_compatible import (
+    MAX_RETRIES,
+    OpenAICompatibleLLM,
+    build_llm_client,
+)
 from oncall_rag.shared.errors import ProviderResponseError
 from oncall_rag.shared.models import ChatMessage, ChatRole
 
@@ -156,3 +160,9 @@ async def test_errors_propagate_unchanged_with_a_note_naming_the_call(
         await llm.complete("system rules", "the question")
 
     assert error.value.__notes__ == [f"LLM call to {MODEL}"]
+
+
+async def test_client_gets_the_configured_timeout_and_the_llm_retries() -> None:
+    async with build_llm_client("http://llm.test/v1", "test-key", timeout_seconds=7.0) as client:
+        assert client.timeout == 7.0
+        assert client.max_retries == MAX_RETRIES

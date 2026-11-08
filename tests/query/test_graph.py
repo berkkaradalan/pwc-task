@@ -39,11 +39,11 @@ def test_starts_with_condensing_when_history_is_given() -> None:
 
 def test_routes_to_generate_when_passages_were_kept() -> None:
     state = {"question": "q", "passages": [passage("a.md", 0.9)]}
-    assert route_after_retrieval(state) == Node.GENERATE
+    assert route_after_retrieval(state) == Node.GENERATE  # type: ignore[arg-type]  # the route reads only passages
 
 
 def test_routes_to_no_context_without_passages() -> None:
-    assert route_after_retrieval({"question": "q", "passages": []}) == Node.NO_CONTEXT
+    assert route_after_retrieval({"question": "q", "passages": []}) == Node.NO_CONTEXT  # type: ignore[typeddict-item]  # the route reads only passages
 
 
 async def test_relevant_passages_are_answered_by_the_llm() -> None:

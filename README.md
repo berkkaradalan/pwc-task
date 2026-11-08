@@ -261,9 +261,10 @@ the failed call, for example `embedding call to qwen/qwen3-embedding-8b@deepinfr
 ```bash
 uv sync                         # Python 3.12 environment from uv.lock
 uv run pytest --cov=oncall_rag  # unit tests: no network, no database (fakes in tests/fakes.py)
+uv run pytest -m integration    # pgvector integration tests: need a database, see below
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src                 # strict
+uv run mypy src tests           # strict
 uv lock --check
 uv run pre-commit install       # ruff, whitespace fixes and gitleaks before each commit
 ```
@@ -289,10 +290,23 @@ docker compose down
 OLLAMA_MODELS_DIR=./.cache/ollama-models scripts/e2e.sh
 ```
 
-The pgvector adapter is exercised by this script, not by the unit tests.
+The integration tests in `tests/integration/` run the pgvector adapter, the ingestion
+pipeline and the API's startup check against a real PostgreSQL, with small hand-built
+vectors and no model. `INTEGRATION_DATABASE_URL` must name the `postgres` maintenance
+database of a throwaway server; each test creates its own database and drops it afterwards.
+Without the variable the tests are skipped, except in CI, where they fail:
 
-CI runs these checks, a Docker image scan and the end-to-end script on every push to `main`
-and on every pull request. The CI jobs and the container-based checks are listed under
+```bash
+docker run -d --rm --name oncall-rag-it -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -p 127.0.0.1:55432:5432 pgvector/pgvector:0.8.6-pg17-bookworm
+until docker exec oncall-rag-it pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+INTEGRATION_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/postgres \
+  uv run pytest -m integration
+docker rm -f oncall-rag-it
+```
+
+CI runs these checks, the integration tests, a Docker image scan and the end-to-end script
+on every push to `main` and on every pull request. The CI jobs and the container-based checks are listed under
 [Development checks](docs/architecture.md#development-checks).
 
 ## Known limitations
@@ -328,25 +342,23 @@ These are drawn from [docs/evaluation.md](docs/evaluation.md):
 
 In order of priority:
 
-1. **Integration tests for the pgvector adapter.** Its SQL is covered only by the
-   end-to-end script, not by tests that run separately against a real database.
-2. **A bounded wait for the language model limit, answering `503` with `Retry-After`.**
+1. **A bounded wait for the language model limit, answering `503` with `Retry-After`.**
    Overload then fails fast instead of piling up timeouts.
-3. **Longer retries for ingestion than for the API.** A batch job can wait out a provider
+2. **Longer retries for ingestion than for the API.** A batch job can wait out a provider
    `429`, while the API should fail fast.
-4. **A lock around ingestion runs.** Two runs must not race on the same documents.
-5. **An automated evaluation set in CI.** The measurements in
+3. **A lock around ingestion runs.** Two runs must not race on the same documents.
+4. **An automated evaluation set in CI.** The measurements in
    [docs/evaluation.md](docs/evaluation.md) are hand-run, and a regression in retrieval
    would go unnoticed.
-6. **Observability.** Expose latency per graph node, semaphore wait, errors by type and pool
+5. **Observability.** Expose latency per graph node, semaphore wait, errors by type and pool
    usage, to see where time goes and when the model is the queue.
-7. **Streaming answers.** The user would see text after the first tokens instead of after
+6. **Streaming answers.** The user would see text after the first tokens instead of after
    30–50 s locally.
-8. **An optional, cloud-only reranker.** It might lift a runbook ranked fifth, such as the
+7. **An optional, cloud-only reranker.** It might lift a runbook ranked fifth, such as the
    replica-lag one, into the top 4. Ollama has no rerank API, so it would be cloud-only.
-9. **Multilingual full-text search.** Non-English questions get no help from full text
+8. **Multilingual full-text search.** Non-English questions get no help from full text
    today.
-10. **Authentication.** Access control is left to the deployment today.
+9. **Authentication.** Access control is left to the deployment today.
 
 ---
 

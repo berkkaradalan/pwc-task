@@ -32,7 +32,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy src
+      - run: uv run mypy src tests
       - name: hadolint
         run: docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
       - name: docker compose config
@@ -57,6 +57,35 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: uv run pytest --cov=oncall_rag
+      - name: Coverage summary
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+  integration:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        # Same image as the db service in docker-compose.yml.
+        image: pgvector/pgvector:0.8.6-pg17-bookworm
+        env:
+          # A throwaway server reachable only from this job, so no password is needed.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      INTEGRATION_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest -m integration --cov=oncall_rag
       - name: Coverage summary
         run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
 
