@@ -4,8 +4,6 @@ __pycache__/
 .venv/
 .vscode/
 .env
-CLAUDE.md
-AGENTS.md
 RULES.md
 .coverage
 htmlcov/

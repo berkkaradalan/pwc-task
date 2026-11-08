@@ -292,4 +292,5 @@ These are drawn from [docs/evaluation.md](docs/evaluation.md):
 
 ---
 
-Built with AI coding assistants; every change was reviewed.
+Built with AI coding assistants; every change was reviewed. The working conventions
+are in [AGENTS.md](AGENTS.md).
