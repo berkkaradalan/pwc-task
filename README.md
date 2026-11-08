@@ -38,18 +38,22 @@ the assistant says so instead of guessing.
 Run all commands from the repository root. Local mode is the default:
 
 ```bash
-cp .env.example .env    # then set POSTGRES_PASSWORD, and the same password in DATABASE_URL
+cp .env.example .env
 docker compose up -d --build --wait api
 ```
 
+The example values in `.env` work as they are. To use another database password, change
+`POSTGRES_PASSWORD` and the password in `DATABASE_URL` together.
+
 This starts PostgreSQL and Ollama and pulls the two local models if they are missing. It
 then indexes the runbooks in `data/docs` and starts the API on `127.0.0.1:8000`. The first
-start takes several minutes, for the model download and about 65 s of ingestion on CPU.
+start takes several minutes for the model download. Ingestion on CPU took about 65 s when
+the corpus had 12 of its current 16 runbooks.
 
 For cloud mode, set two more values in `.env` before starting:
 
 ```bash
-cp .env.example .env    # then set POSTGRES_PASSWORD and DATABASE_URL as above
+cp .env.example .env
 # in .env: RUN_MODE=cloud and OPENROUTER_API_KEY=<your key>
 docker compose up -d --build --wait api
 ```
@@ -99,7 +103,8 @@ rebuilds the index by itself.
 
 `RUN_MODE` in `.env` is the only switch. It selects the models, and through
 `COMPOSE_PROFILES=${RUN_MODE}` in `.env` it also decides whether Compose starts the Ollama
-services.
+services. Compose resolves `${RUN_MODE}` only from lines above it, so `COMPOSE_PROFILES`
+must come after `RUN_MODE` in `.env`, as it does in `.env.example`.
 
 | | `local` (default) | `cloud` |
 |---|---|---|
@@ -154,6 +159,32 @@ service builds its adapters in one composition root.
 ports, configuration, Compose, error handling, concurrency and the schema.
 [docs/decisions.md](docs/decisions.md) explains why the system is built this way, and
 [docs/evaluation.md](docs/evaluation.md) holds the measurements.
+
+## Concurrency and scaling
+
+These are short answers. [docs/architecture.md](docs/architecture.md#concurrency) has the
+details, with what is implemented and what is a next step kept apart.
+
+- **Request isolation.** Implemented. The compiled graph is shared, but each request runs
+  with its own state, the client sends the history, and nothing per request is stored in
+  globals. In a test with 24 requests at once, no response contained another request's
+  query.
+- **Parallel execution.** Model and database calls are async, so one process serves other
+  requests while one waits for the model. Ingestion runs as a separate process. Next steps:
+  run the independent calls inside a request in parallel, and run ingestion as a background
+  job with a lock.
+- **Resource limits.** Implemented: a per-process limit on concurrent language model calls
+  (`LLM_MAX_CONCURRENCY`), timeouts on model calls and on getting a database connection,
+  bounded SDK retries, and `503`/`504` responses when they run out. Next step: a bounded
+  wait that answers `503` with `Retry-After` instead of queueing until a timeout.
+- **Multiple instances.** The API, the history and the graph state are stateless. The
+  PostgreSQL index is the only shared, persistent data. The semaphore and the connection
+  pool are per instance, so their limits multiply, and ingestion runs need a lock so they
+  cannot overlap.
+- **Bottlenecks.** Language model generation is the main limit: 30–50 s per answer on CPU,
+  and provider rate limits (`429`) in cloud mode. PostgreSQL is not a bottleneck at this
+  scale. The first improvements are the cloud model or a GPU, a bounded semaphore wait, and
+  metrics per graph node.
 
 ## API
 
@@ -272,9 +303,9 @@ These are drawn from [docs/evaluation.md](docs/evaluation.md):
   pending after a reload" question, the matching runbook ranks fifth, outside the top 4,
   and the answer blames the wrong cause.
 - **Full-text search is English only.** Non-English questions rely on vector search alone.
-- **The similarity threshold has narrow margins.** In cloud mode the margin is about 0.05
-  on each side of 0.5. Re-check the threshold after changing the documents or an embedding
-  model.
+- **The similarity threshold has small margins.** In cloud mode the closest unrelated
+  question scores about 0.06 below 0.5, and the lowest answerable one about 0.11 above it.
+  Re-check the threshold after changing the documents or an embedding model.
 - **`answered` does not guarantee coverage.** When passages pass the threshold but do not
   contain the answer, the model says the documentation does not cover it, and the status is
   still `answered`.
@@ -287,8 +318,35 @@ These are drawn from [docs/evaluation.md](docs/evaluation.md):
   unloaded.
 - **Follow-ups use only the previous question.** Older turns are not added to the search,
   and a rewrite that drops the subject is not detected.
+- **Lists can be partial without saying so.** This follows from the design rather than
+  from a measurement. Only the top `RETRIEVAL_TOP_K` chunks reach the model, so an answer to
+  "list all ..." covers only what those chunks contain, and it does not say so.
 - **There is no authentication.** Compose publishes the API on `127.0.0.1` only, and access
   control is left to the deployment.
+
+## Next steps
+
+In order of priority:
+
+1. **Integration tests for the pgvector adapter.** Its SQL is covered only by the
+   end-to-end script, not by tests that run separately against a real database.
+2. **A bounded wait for the language model limit, answering `503` with `Retry-After`.**
+   Overload then fails fast instead of piling up timeouts.
+3. **Longer retries for ingestion than for the API.** A batch job can wait out a provider
+   `429`, while the API should fail fast.
+4. **A lock around ingestion runs.** Two runs must not race on the same documents.
+5. **An automated evaluation set in CI.** The measurements in
+   [docs/evaluation.md](docs/evaluation.md) are hand-run, and a regression in retrieval
+   would go unnoticed.
+6. **Observability.** Expose latency per graph node, semaphore wait, errors by type and pool
+   usage, to see where time goes and when the model is the queue.
+7. **Streaming answers.** The user would see text after the first tokens instead of after
+   30–50 s locally.
+8. **An optional, cloud-only reranker.** It might lift a runbook ranked fifth, such as the
+   replica-lag one, into the top 4. Ollama has no rerank API, so it would be cloud-only.
+9. **Multilingual full-text search.** Non-English questions get no help from full text
+   today.
+10. **Authentication.** Access control is left to the deployment today.
 
 ---
 

@@ -94,9 +94,9 @@ flowchart TD
     start(["POST /ask"]) --> hist{"History given?"}
     hist -->|no| retrieve["retrieve<br/>search with the question"]
     hist -->|yes| condense["condense_question<br/>LLM rewrites the follow-up"]
-    condense --> changed{"Rewritten, or no earlier<br/>user question?"}
-    changed -->|yes| retrieve
-    changed -->|"no: same question"| followup["retrieve_follow_up<br/>search alone and after the<br/>previous question, keep the closer"]
+    condense --> changed{"Unchanged by the model,<br/>and an earlier user<br/>question exists?"}
+    changed -->|yes| followup["retrieve_follow_up<br/>search alone and after the<br/>previous question, keep the closer"]
+    changed -->|no| retrieve
     retrieve --> gate{"Any vector candidate<br/>at or above<br/>RETRIEVAL_MIN_SIMILARITY?"}
     followup --> gate
     gate -->|yes| generate["generate<br/>LLM answers from the top-k passages"]
@@ -286,32 +286,151 @@ Ingestion exits with one of three codes (`ingest/__main__.py`):
 
 ## Concurrency
 
+This section answers the five scaling questions for this codebase. Each subsection separates
+what is implemented from the next steps. Measured results are in
+[evaluation.md](evaluation.md). Everything else here is design reasoning.
+
+### Request isolation
+
+Implemented:
+
 - **Shared graph, per-request state.** The graph is compiled once at startup and shared by
   all requests. It holds only the adapters and the retrieval settings. Each request runs
   `graph.ainvoke()` with a new state, and the server stores no conversation. There is no
   module-level mutable state, and `app.state` holds only the objects built at startup.
-- **Async I/O.** Both model clients (`AsyncOpenAI`) and the database pool are async. While
-  some requests wait for the language model, one process keeps serving health checks,
-  retrieval and `no_relevant_context` answers.
-- **Language model limit.** At most `LLM_MAX_CONCURRENCY` language model calls run at once
-  per API process, 4 by default. Further calls wait for the semaphore.
-- **Database pool.** `psycopg-pool` opens at most `DB_POOL_MAX_SIZE` connections per
-  process and waits up to 10 s to connect or to get a free connection. Each store call
-  borrows a connection for one statement or one transaction. Connections broken by a
-  database restart are replaced before they are handed out.
+- **No shared connections mid-query.** Each store call borrows a pooled connection for one
+  statement or one transaction and returns it, so two requests never share a connection
+  while a query runs.
 - **Request IDs.** `asgi-correlation-id` reuses a valid UUID from the `X-Request-ID` header
-  or generates one, and returns it in `X-Request-ID`. A logging filter adds it to every API
-  log line. One access log line per request records the method, path, status and duration.
-- **Instances.** Each API instance has its own pool and semaphore, so the totals multiply
-  by the number of instances. Ingestion is a single one-shot writer, and each document is
-  replaced in one transaction.
+  or generates one, and returns it in `X-Request-ID`. The ID lives in a context variable,
+  so concurrent requests never see each other's ID. A logging filter adds it to every API
+  log line, and one access log line per request records the method, path, status and
+  duration.
 
-Some safeguards are not implemented. There is no bounded wait for the semaphore that would
-answer `503` with `Retry-After` when it is full, and no lock that prevents two ingestion
-runs from overlapping. There is also no concurrency limit shared across instances, and no
-restart policy for `ollama`. In local mode Ollama serves one request per model at a time,
-so with `LLM_MAX_CONCURRENCY=4` the fourth question waits for three answers and can reach
-`LLM_TIMEOUT_SECONDS`.
+In the concurrency test, 24 requests sent at once all returned `200`, and no response
+contained another request's search query.
+
+### Parallel execution
+
+Implemented:
+
+- **Async I/O.** A question waits in three places: the embedding call, the PostgreSQL
+  query and the language model call. All three use async clients (`AsyncOpenAI` and the
+  async `psycopg` pool), so while some requests wait for the language model, one process
+  keeps serving health checks, retrieval and `no_relevant_context` answers. The API does
+  no CPU-heavy work of its own. Building a prompt is string formatting.
+- **Language model limit.** An `asyncio.Semaphore` in the adapter lets at most
+  `LLM_MAX_CONCURRENCY` language model calls run at once per API process.
+- **Ingestion as a separate process.** Ingestion is a one-shot job, not part of the API. It
+  does the heavy work of parsing and embedding every changed document, so it never blocks
+  the API's event loop or holds API connections.
+
+Next steps:
+
+- **Parallel calls inside a request.** `retrieve_follow_up` runs its two searches one
+  after the other, and ingestion embeds its batches one at a time. Both could run with
+  `asyncio.gather`, within the provider's rate limits.
+- **More worker processes** only once the model backend has spare capacity. Every worker
+  gets its own semaphore and pool, so the limits must be divided between them (see Multiple
+  instances).
+- **Ingestion as a background job with a lock.** A PostgreSQL advisory lock around a run
+  would keep two ingestions from racing on the same documents.
+
+### Resource limits
+
+Implemented:
+
+- **Concurrent model calls.** The semaphore above caps language model calls per process.
+  Further calls wait in the process.
+- **Timeouts.** `LLM_TIMEOUT_SECONDS` per language model attempt, 120 s read and 5 s
+  connect for embeddings, and 10 s to connect to PostgreSQL or to get a free pooled
+  connection.
+- **Transient errors and API limits.** The `openai` SDK retries connection errors,
+  timeouts, 408, 409, 429 and 5xx: once for the language model, and up to three attempts
+  for embeddings. When the retries are used up, the API answers `503` (unreachable,
+  rate-limited or failing) or `504` (timeout), so a client can tell "try again later" from
+  "too slow". This happened once in the evaluation: a provider answered `429` after two SDK
+  retries, and the API returned `503`.
+- **Database pool.** `psycopg-pool` opens at most `DB_POOL_MAX_SIZE` connections per
+  process. Connections broken by a database restart are replaced before they are handed
+  out.
+- **Ollama.** In local mode, Ollama serves one request per model at a time
+  (`OLLAMA_NUM_PARALLEL=1`) and runs under a memory limit (`OLLAMA_MEMORY_LIMIT`).
+
+Next steps:
+
+- **Fail fast on overload.** There is no bounded wait for the semaphore. Under overload,
+  requests queue until they time out. A bounded wait that answers `503` with `Retry-After`
+  would fail fast and predictably.
+- **Match the limit to the backend.** In local mode, with `LLM_MAX_CONCURRENCY=4`, the
+  fourth question waits for three answers inside Ollama and can reach
+  `LLM_TIMEOUT_SECONDS`. Setting the limit to the backend's real capacity (1 for local
+  Ollama) moves that wait into the API, where a bounded wait can handle it.
+- **Different retry budgets.** The API should fail fast, while ingestion is a batch job that
+  can wait out a rate limit. Both use the same embedding adapter today, with the same
+  retries.
+- **A restart policy for `ollama`**, so a container killed at its memory limit comes back.
+
+### Multiple instances
+
+Stateless, so any number of instances can serve the same requests:
+
+- the API itself: no sessions and no local files;
+- conversation history, which the client sends with each request;
+- the graph state, which lives only for one request.
+
+Shared and persistent: the PostgreSQL index (documents, chunks, vectors and full text).
+Every instance answers from the same data, and each document is replaced in one
+transaction, so no instance sees a half-updated document.
+
+What multiplies or breaks per instance, with the fix for each:
+
+- **The semaphore and the pool are per process.** Three instances with
+  `DB_POOL_MAX_SIZE=10` hold up to 30 of PostgreSQL's default 100 connections, and three
+  semaphores allow three times `LLM_MAX_CONCURRENCY` model calls. Divide the limits by the
+  number of instances, and add a concurrency limit shared by all instances if the provider
+  enforces a global rate limit.
+- **Ingestion runs can overlap.** In Compose, `api` starts only after `ingest` has
+  completed, but nothing stops two ingestions started by hand or by two deployments. A
+  PostgreSQL advisory lock around a run fixes that.
+- **`--reindex` drops the tables**, so every instance fails while it runs. Building the new
+  index next to the old one and switching over would avoid that downtime.
+
+### Bottlenecks
+
+The main bottleneck is language model generation. Locally, an answer takes 30–50 s on CPU,
+and with `OLLAMA_NUM_PARALLEL=1` answers are generated one at a time. In cloud mode,
+provider rate limits are the limit: `429` responses were seen both on `/ask` and during
+ingestion. Retrieval takes one embedding call and one indexed query, and PostgreSQL and the
+index are not a bottleneck at this scale (16 runbooks, 103 chunks).
+
+Today only the logs exist. The metrics to expose and watch:
+
+- latency per graph node (`condense_question`, `retrieve`, `generate`), to see where time
+  goes;
+- semaphore wait time, which shows when the model is the queue;
+- language model and embedding errors by type (`429`, `5xx`, timeouts, `503`/`504` sent to
+  clients);
+- database pool wait time and connections in use;
+- the share of `no_relevant_context` answers, which rises with documentation gaps or a
+  threshold set too high;
+- token usage and cost per answer in cloud mode.
+
+The order in which to improve the system, and why:
+
+1. **Use the cloud model or a GPU host for answers.** It removes the largest latency with a
+   configuration change only.
+2. **Bounded semaphore wait with `503` and `Retry-After`.** Overload then fails fast and
+   predictably instead of piling up timeouts.
+3. **Expose the metrics above.** Every later step needs them to show whether it helped.
+4. **Stream answers to the client.** The user sees text after the first tokens instead of
+   after the whole answer.
+5. **Cache answers to repeated questions**, keyed by the normalized question and the index
+   content. During an incident, many people ask the same thing.
+6. **Run embeddings on a separate Ollama instance from the answering model.** Locally, both
+   compete for the same CPU.
+7. **Add API replicas.** This is worthwhile only once the model backend is no longer the
+   limit, because all replicas share it.
 
 ## Database schema
 
@@ -371,7 +490,7 @@ src/oncall_rag/
     └── rag/                 # graph, state, prompts, rank fusion
 tests/                       # mirrors src/oncall_rag; fakes.py, fixtures/docs/
 scripts/                     # e2e.sh, e2e_api_checks.py
-data/docs/                   # the 12 sample runbooks
+data/docs/                   # the 16 sample runbooks (15 Markdown, 1 plain text)
 ```
 
 ## Development checks

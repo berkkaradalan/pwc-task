@@ -1,0 +1,103 @@
+NODE DISK PRESSURE
+
+SUMMARY
+
+The page means a Kubernetes node crossed 85% disk usage. This is the warning
+before the failure, not a housekeeping reminder: left alone, the disk fills,
+the kubelet evicts pods and refuses to start new ones, and anything stateful
+on that node goes down with it. On our nodes that can be pg-main-0, pg-main-1,
+rabbitmq-0 or redis-cache. Treat the page as "about to lose whatever runs on
+this node".
+
+ALERT / SYMPTOMS
+
+- Page: Node disk usage > 85%.
+- kubectl describe node <node> shows DiskPressure:True under Conditions.
+- df -h on the node shows which mount is filling.
+- If it already went past you: pod evictions in kubectl get events, rabbitmq-0
+  blocking publishing on a disk alarm, PostgreSQL or Redis pods restarting.
+
+IMPACT
+
+- SEV3 while usage sits between 85% and 100% with every pod still Running:
+  internal risk, no merchant impact yet. severity-levels.md lists exactly this
+  case as a SEV3 example.
+- The moment eviction starts or a stateful pod restarts, reclassify on merchant
+  impact: payments failing for most merchants is SEV1, a subset degraded is
+  SEV2.
+
+DIAGNOSIS
+
+1. Identify the node from the alert labels, then check its conditions:
+
+   kubectl describe node <node> | grep -A5 Conditions
+
+2. See what is actually full. From the node host, or a debug pod chrooted into
+   the host filesystem:
+
+   kubectl debug node/<node> -it --image=busybox -- chroot /host df -h
+
+   Note which mount is the culprit. Usual suspects: /var/lib/containerd (images
+   and writable layers), /var/log/containers (container logs), an emptyDir
+   volume, or a genuinely growing data directory belonging to PostgreSQL or
+   RabbitMQ.
+
+3. Find the big directories once you know the mount:
+
+   du -xh --max-depth=1 /var | sort -h | tail -20
+
+4. Check who runs on the node before deleting anything:
+
+   kubectl get pods -n prod -o wide | grep <node>
+
+   If pg-main-0, pg-main-1, rabbitmq-0 or redis-cache is on it, every next
+   command is one mistake away from a SEV1.
+
+MITIGATION
+
+1. Free space in decreasing order of safety. Truncate rotated container logs
+   that Loki has already ingested — and truncate in place; never rm a file a
+   running process still holds open, rm frees nothing while the file
+   descriptor is open. Clear unused images and leftover emptyDir scratch from
+   finished pods.
+
+2. DO NOT delete anything inside a PostgreSQL data directory or pg_wal on
+   pg-main-0 / pg-main-1, and do not touch rabbitmq-0's data directory, no
+   matter how large they look. That is live financial data: removing
+   "old-looking" WAL or queue files corrupts the database or drops queued
+   charges. Space problems on those mounts go to #team-ledger or
+   #oncall-platform with a plan, not with rm.
+
+3. If cleanup will not hold the node, move workloads off before it dies:
+
+   kubectl cordon <node>
+   kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+
+   Draining a node that hosts pg-main-0 restarts the primary. Announce it
+   first, confirm pg-main-1 is healthy and its lag is low, and expect checkout
+   blips while it reschedules. If the broker is affected after a move,
+   rabbitmq-node-down.md and payments-worker-queue-backlog.md pick it up.
+
+4. Verify: df -h back under 85% on the offending mount, DiskPressure clears in
+   kubectl describe node, the alert resolves, and all pods on the node are
+   Running.
+
+ESCALATION
+
+- Acknowledge the page within 5 minutes; if unacknowledged, the secondary
+  on-call is paged at 15 minutes.
+- Work the cleanup in #oncall-platform and post which node, which mount, and
+  what you found.
+- The moment workloads are evicted or restart with merchant impact: SEV1 pages
+  the engineering manager on-call immediately and assigns an incident
+  commander; SEV1 and SEV2 both run in #inc-major.
+- Every SEV1 and SEV2 needs a postmortem within 5 business days.
+
+RELATED RUNBOOKS
+
+- rabbitmq-node-down.md (broker down or blocked after disk trouble)
+- payments-worker-queue-backlog.md (charge backlog after broker disruption)
+- checkout-api-high-latency.md (node saturation showing up as checkout latency)
+- severity-levels.md
+- oncall-escalation-policy.md
+- postmortem-process.md

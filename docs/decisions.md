@@ -7,8 +7,8 @@ trade-off. The measurements referred to here are in [evaluation.md](evaluation.m
 ## pgvector in PostgreSQL
 
 **Context.** The index holds documents, their chunks and a vector per chunk. Since hybrid
-retrieval was added, it also holds a full-text index. The sample corpus is small: 12
-runbooks and 79 chunks.
+retrieval was added, it also holds a full-text index. The sample corpus is small: 16
+runbooks and 103 chunks.
 
 **Decision.** Everything is stored in PostgreSQL with the pgvector extension, using an
 HNSW index with cosine distance. The reasons:
@@ -82,9 +82,10 @@ and Q7 ranked sixth to tenth in both modes, outside the top 4.
 **Alternatives.** Vector search alone missed Q6, Q7, s1 and s2. A larger
 `RETRIEVAL_TOP_K` and a weighted fusion were not tried.
 
-**Trade-off.** Hits rose from 14/20 to 17/20 with no regressions. Q7 still ranks fifth,
-however, and non-English questions get no help from full text. Once the gate is open,
-full-text passages with a low similarity are kept as well.
+**Trade-off.** On the 12-runbook corpus, hits rose from 14/20 to 17/20 with no
+regressions, and on the current 16-runbook corpus 18 of 20 questions are hits. Q7 still
+ranks fifth, however, and non-English questions get no help from full text. Once the gate
+is open, full-text passages with a low similarity are kept as well.
 
 ## No reranker
 
@@ -108,8 +109,8 @@ queries could therefore be embedded by different weights.
 pinned to that provider with fallbacks disabled. `.env.example` pins DeepInfra, which
 returned bit-identical vectors in sequential runs. Nebius drifted even when pinned.
 
-**Alternatives.** With unpinned routing, scores changed between runs, and ingestion took
-80–90 s instead of 20 s.
+**Alternatives.** With unpinned routing, scores changed between runs, and ingestion of the
+12-runbook corpus took 80–90 s instead of 20 s.
 
 **Trade-off.** If the pinned provider is down, requests fail instead of switching
 provider: the API answers `503` and ingestion exits with `1`. Switching provider is a
@@ -129,8 +130,9 @@ API refuses to start if the index holds another identity or dimension.
 **Alternatives.** Ingestion could refuse to run until the operator runs `--reindex`, which
 adds a manual step after every mode switch.
 
-**Trade-off.** A mode switch re-embeds every document, which takes about 20 s in cloud mode
-and 65 s in local mode for the samples. A changed `EMBEDDING_DIM` still needs `--reindex`,
+**Trade-off.** A mode switch re-embeds every document. For the 12-runbook corpus this took
+about 20 s in cloud mode and 65 s in local mode; a cloud `--reindex` of the 16-runbook
+corpus took 75 s in one run. A changed `EMBEDDING_DIM` still needs `--reindex`,
 because the column type changes.
 
 ## Reindex instead of migrations
