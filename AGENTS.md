@@ -53,6 +53,8 @@ Change it in this order: `docker compose down`, edit `RUN_MODE`, then
   exception is `shared/config.py`, the only place that turns `RUN_MODE` into an endpoint, a
   key and a model.
 - SQL lives only in the pgvector adapter.
+  Exception: integration tests may run SQL for test setup only (creating and dropping
+  throwaway databases, taking locks to simulate a slow database).
 - All configuration goes through the pydantic-settings classes in `shared/config.py`; no
   `os.getenv` elsewhere. Required infrastructure settings have no default; only app-level
   tunables do.

@@ -18,7 +18,8 @@ router = APIRouter()
 async def ask(request: AskRequest, answer_service: AnswerServiceDependency) -> AskResponse:
     try:
         return await answer_service.answer(request.question, request.history)
-    except openai.APITimeoutError as error:
+    # TimeoutError: the request deadline in AnswerService expired.
+    except (openai.APITimeoutError, TimeoutError) as error:
         logger.warning("Answering failed: %s", failure_summary(error))
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT, "A required service did not answer in time."

@@ -58,4 +58,4 @@ async def answer_service_and_search(
         )
         await store.ensure_compatible(embedder.embedding_identity)
         graph = build_graph(embedder, store, llm, retrieval)
-        yield AnswerService(graph), store
+        yield AnswerService(graph, deadline_seconds=settings.ask_deadline_seconds), store

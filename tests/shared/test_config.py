@@ -97,3 +97,35 @@ def test_cloud_mode_uses_openrouter_with_the_key(monkeypatch: pytest.MonkeyPatch
         assert endpoint.model == model
     assert settings.embedding_endpoint.provider == "deepinfra"
     assert settings.llm_endpoint.provider is None
+
+
+def test_the_ask_deadline_defaults_to_180_seconds() -> None:
+    settings = QuerySettings()  # type: ignore[call-arg]  # values come from the environment
+
+    assert settings.ask_deadline_seconds == 180
+
+
+def test_the_ask_deadline_can_be_set_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASK_DEADLINE_SECONDS", "300")
+
+    settings = QuerySettings()  # type: ignore[call-arg]  # values come from the environment
+
+    assert settings.ask_deadline_seconds == 300
+
+
+@pytest.mark.parametrize(
+    ("ask_deadline", "llm_timeout"),
+    [pytest.param("60", "60", id="equal"), pytest.param("90", "120", id="shorter")],
+)
+def test_an_ask_deadline_not_above_the_llm_timeout_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, ask_deadline: str, llm_timeout: str
+) -> None:
+    monkeypatch.setenv("ASK_DEADLINE_SECONDS", ask_deadline)
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", llm_timeout)
+
+    with pytest.raises(ValidationError) as error:
+        QuerySettings()  # type: ignore[call-arg]  # values come from the environment
+
+    message = str(error.value)
+    assert "ASK_DEADLINE_SECONDS must be greater than LLM_TIMEOUT_SECONDS" in message
+    assert "top-secret-password" not in message

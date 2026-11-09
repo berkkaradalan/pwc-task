@@ -175,8 +175,11 @@ details, with what is implemented and what is a next step kept apart.
   job with a lock.
 - **Resource limits.** Implemented: a per-process limit on concurrent language model calls
   (`LLM_MAX_CONCURRENCY`), timeouts on model calls and on getting a database connection,
-  bounded SDK retries, and `503`/`504` responses when they run out. Next step: a bounded
-  wait that answers `503` with `Retry-After` instead of queueing until a timeout.
+  bounded SDK retries, a deadline for the whole request (`ASK_DEADLINE_SECONDS`), and
+  `503`/`504` responses when they run out. A request waits at most `ASK_DEADLINE_SECONDS`
+  (180 s by default), including the wait for a language model slot, before it gets `504`.
+  Next step: a bounded wait that answers `503` with `Retry-After` instead of queueing until
+  the deadline.
 - **Multiple instances.** The API, the history and the graph state are stateless. The
   PostgreSQL index is the only shared, persistent data. The semaphore and the connection
   pool are per instance, so their limits multiply, and ingestion runs need a lock so they
@@ -250,7 +253,7 @@ of that request.
 | 422 | invalid request body, for example an empty question or a `system` role in `history`; FastAPI's default body lists each field |
 | 502 | the model provider rejected the request, for example because of a bad key, or returned an unusable answer |
 | 503 | a model provider or the database is unreachable, rate-limited or failing, or no provider can serve the model, for example because the pinned embedding provider is down |
-| 504 | a model provider did not answer in time; for the language model, the limit is `LLM_TIMEOUT_SECONDS` per attempt |
+| 504 | a model provider did not answer in time (for the language model, `LLM_TIMEOUT_SECONDS` per attempt), or the whole request took longer than `ASK_DEADLINE_SECONDS` |
 | 500 | anything unexpected: `{"detail": "Internal server error", "request_id": "..."}` |
 
 The `detail` texts are fixed. The underlying error is only logged, and the log line names

@@ -20,12 +20,18 @@ CLOUD_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
 LOCAL_LLM_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 CLOUD_LLM_MODEL = "qwen/qwen3-30b-a3b-instruct-2507"
 LLM_TIMEOUT_SECONDS = 7.0
+ASK_DEADLINE_SECONDS = 8.0
 DB_POOL_MAX_SIZE = 3
 PINNED_ROUTING = {"order": [EMBEDDING_PROVIDER], "allow_fallbacks": False}
 QUESTION = "How do I fix the backlog?"
 
 
-def query_settings(run_mode: RunMode) -> QuerySettings:
+def query_settings(
+    run_mode: RunMode,
+    *,
+    llm_timeout_seconds: float = LLM_TIMEOUT_SECONDS,
+    ask_deadline_seconds: float = ASK_DEADLINE_SECONDS,
+) -> QuerySettings:
     """Both modes' settings are set, so a value taken from the wrong mode shows up."""
     return QuerySettings(
         run_mode=run_mode,
@@ -38,7 +44,8 @@ def query_settings(run_mode: RunMode) -> QuerySettings:
         local_llm_model=LOCAL_LLM_MODEL,
         cloud_llm_model=CLOUD_LLM_MODEL,
         embedding_dim=FAKE_DIMENSION,
-        llm_timeout_seconds=LLM_TIMEOUT_SECONDS,
+        llm_timeout_seconds=llm_timeout_seconds,
+        ask_deadline_seconds=ask_deadline_seconds,
         db_pool_max_size=DB_POOL_MAX_SIZE,
         _env_file=None,  # type: ignore[call-arg]  # pydantic-settings init option, unknown to type checkers
     )
@@ -155,3 +162,13 @@ async def test_every_client_is_closed_on_exit(fake_providers: FakeProviders) -> 
     clients = [*fake_providers.embedding_clients.clients, *fake_providers.llm_clients.clients]
     assert len(clients) == 2
     assert all(client.is_closed() for client in clients)
+
+
+async def test_the_ask_deadline_reaches_the_answer_service(fake_providers: FakeProviders) -> None:
+    # The fake client builder ignores the LLM timeout, so only the deadline can end the call.
+    settings = query_settings(RunMode.LOCAL, llm_timeout_seconds=0.1, ask_deadline_seconds=0.2)
+    fake_providers.chat_api.delay_seconds = 30
+
+    async with answer_service_and_search(settings) as (answer_service, _):
+        with pytest.raises(TimeoutError, match=r"the request deadline of 0\.2 s expired"):
+            await answer_service.answer(QUESTION, [])

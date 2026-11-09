@@ -23,6 +23,8 @@ from tests.fakes import (
 )
 
 RETRIEVAL = RetrievalConfig(top_k=4, min_similarity=0.5)
+# Long enough that no test with fakes reaches it.
+DEADLINE_SECONDS = 30
 
 
 @pytest.fixture
@@ -47,7 +49,7 @@ def client(
     """The API wired to fakes. Not used as a context manager, so the real lifespan never runs."""
     app = create_app()
     graph = build_graph(embedder, store, llm, RETRIEVAL)
-    answer_service = AnswerService(graph)
+    answer_service = AnswerService(graph, deadline_seconds=DEADLINE_SECONDS)
     app.dependency_overrides[get_answer_service] = lambda: answer_service
     app.dependency_overrides[get_passage_search] = lambda: store
     return TestClient(app)

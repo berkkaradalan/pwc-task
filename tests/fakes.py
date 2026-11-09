@@ -1,9 +1,10 @@
 """In-memory test doubles for the domain ports, the provider APIs and the builders the
 composition roots call. No network, no database."""
 
+import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -192,15 +193,17 @@ class FakeStoreConnector:
 
 class FakeChatApi:
     """httpx2.MockTransport handler for `/v1/chat/completions`; answers every request with
-    `answer` and records the request payloads."""
+    `answer` after `delay_seconds` and records the request payloads."""
 
-    def __init__(self, answer: str) -> None:
+    def __init__(self, answer: str, delay_seconds: float = 0) -> None:
         self.answer = answer
+        self.delay_seconds = delay_seconds
         self.payloads: list[dict[str, Any]] = []
 
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+    async def __call__(self, request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(request.content)
         self.payloads.append(payload)
+        await asyncio.sleep(self.delay_seconds)
         message = {"role": "assistant", "content": self.answer}
         choice = {"index": 0, "finish_reason": "stop", "message": message}
         completion = {
@@ -217,7 +220,11 @@ class FakeClientBuilder:
     """Stands in for `build_embedding_client` or `build_llm_client`: records the arguments and
     returns an SDK client whose requests are answered by `responder`."""
 
-    def __init__(self, responder: Callable[[httpx2.Request], httpx2.Response]) -> None:
+    def __init__(
+        self,
+        responder: Callable[[httpx2.Request], httpx2.Response]
+        | Callable[[httpx2.Request], Coroutine[None, None, httpx2.Response]],
+    ) -> None:
         self.responder = responder
         self.calls: list[tuple[object, ...]] = []
         self.clients: list[openai.AsyncOpenAI] = []

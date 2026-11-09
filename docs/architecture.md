@@ -201,6 +201,7 @@ never the value. `.env.example` lists every setting with a comment.
 | `DOCS_DIR` | `data/docs` | ingestion only |
 | `RETRIEVAL_TOP_K`, `RETRIEVAL_MIN_SIMILARITY` | 4, 0.5 | query service only |
 | `LLM_TIMEOUT_SECONDS` | 60 (120 in `.env.example`) | per attempt |
+| `ASK_DEADLINE_SECONDS` | 180 | the whole `/ask` request, including the wait for a language model slot; must be greater than `LLM_TIMEOUT_SECONDS` |
 | `LLM_MAX_CONCURRENCY` | 4 | per API process |
 | `DB_POOL_MAX_SIZE` | 10 | per API process; ingestion uses one connection |
 
@@ -267,7 +268,7 @@ which may name internal hosts, is only logged.
 | 422 | invalid request body; FastAPI's default body lists each field |
 | 502 | `openai.APIStatusError` not listed below, or `ProviderResponseError`: the provider rejected the request, for example because of a bad key, or returned an unusable answer |
 | 503 | `APIConnectionError`, `NotFoundError`, `RateLimitError`, `InternalServerError` or `psycopg.OperationalError`; on OpenRouter, `NotFoundError` means no provider can serve the model, for example because the pinned one is down |
-| 504 | `APITimeoutError` |
+| 504 | `APITimeoutError`, or `TimeoutError` when the request deadline (`ASK_DEADLINE_SECONDS`) expired |
 | 500 | anything else: `{"detail": "Internal server error", "request_id": "..."}`, with the traceback in the logs under the same request ID |
 
 `GET /health` returns `200 {"status": "ok"}` when the database answers `SELECT 1`, and
@@ -345,6 +346,12 @@ Implemented:
 - **Timeouts.** `LLM_TIMEOUT_SECONDS` per language model attempt, 120 s read and 5 s
   connect for embeddings, and 10 s to connect to PostgreSQL or to get a free pooled
   connection.
+- **Request deadline.** `AnswerService` runs the graph inside
+  `asyncio.timeout(ASK_DEADLINE_SECONDS)`. The deadline covers every call and retry of the
+  request and the wait for a language model slot. When it expires, the run is cancelled,
+  which releases the slot and the pooled connection, and the client gets `504`. A request
+  therefore waits at most `ASK_DEADLINE_SECONDS` (180 s by default). The default leaves
+  room for a local follow-up, which makes two language model calls of 30–50 s each.
 - **Transient errors and API limits.** The `openai` SDK retries connection errors,
   timeouts, 408, 409, 429 and 5xx: once for the language model, and up to three attempts
   for embeddings. When the retries are used up, the API answers `503` (unreachable,
@@ -359,9 +366,9 @@ Implemented:
 
 Next steps:
 
-- **Fail fast on overload.** There is no bounded wait for the semaphore. Under overload,
-  requests queue until they time out. A bounded wait that answers `503` with `Retry-After`
-  would fail fast and predictably.
+- **Fail fast on overload.** There is no separate bound on the wait for the semaphore.
+  Under overload, requests queue until the request deadline. A short bounded wait that
+  answers `503` with `Retry-After` would fail faster and tell the client when to retry.
 - **Match the limit to the backend.** In local mode, with `LLM_MAX_CONCURRENCY=4`, the
   fourth question waits for three answers inside Ollama and can reach
   `LLM_TIMEOUT_SECONDS`. Setting the limit to the backend's real capacity (1 for local

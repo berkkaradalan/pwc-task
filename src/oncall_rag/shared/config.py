@@ -100,11 +100,22 @@ class QuerySettings(CommonSettings):
     cloud_llm_model: str
     llm_timeout_seconds: float = Field(default=60, gt=0)
     llm_max_concurrency: int = Field(default=4, ge=1)
+    # The whole /ask request, including the wait for a language model slot. A local follow-up
+    # makes two language model calls of 30-50 s each on CPU.
+    ask_deadline_seconds: float = Field(default=180, gt=0)
 
     retrieval_top_k: int = Field(default=4, ge=1)
     retrieval_min_similarity: float = Field(default=0.5, ge=-1, le=1)
 
     db_pool_max_size: int = Field(default=10, ge=1)
+
+    @model_validator(mode="after")
+    def _check_ask_deadline(self) -> Self:
+        # Otherwise the deadline always expires first, and the per-attempt timeout and its
+        # retry never take effect.
+        if self.ask_deadline_seconds <= self.llm_timeout_seconds:
+            raise ValueError("ASK_DEADLINE_SECONDS must be greater than LLM_TIMEOUT_SECONDS")
+        return self
 
     @property
     def llm_endpoint(self) -> ModelEndpoint:
